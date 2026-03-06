@@ -1,0 +1,3772 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Pomodoro & Tareas</title>
+<link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Sora:wght@300;400;500;600&display=swap" rel="stylesheet">
+<!-- Librería para renderizar Markdown en la nota -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/marked/9.1.6/marked.min.js"></script>
+<!-- Librería de Supabase para sincronización en la nube -->
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<style>
+  :root {
+    --bg: #0f0f13;
+    --surface: #1a1a22;
+    --surface2: #22222e;
+    --border: #2e2e3e;
+    --accent: #e8643a;
+    --accent2: #5b8af0;
+    --green: #4caf82;
+    --yellow: #e8c23a;
+    --red: #e84a4a;
+    --text: #e8e8f0;
+    --muted: #7a7a9a;
+    --mono: 'Space Mono', monospace;
+    --sans: 'Sora', sans-serif;
+    --radius: 12px;
+  }
+
+  /* Colores para clasificación de duración de tarea */
+  :root {
+    --dur-rapida-bg: rgba(76, 175, 130, 0.12);
+    --dur-rapida-color: #4caf82;
+    --dur-media-bg: rgba(232, 194, 58, 0.12);
+    --dur-media-color: #e8c23a;
+    --dur-larga-bg: rgba(232, 100, 58, 0.12);
+    --dur-larga-color: #e8643a;
+    /* Fondo diferenciado para el panel de nota */
+    --nota-bg: #1e1e2a;
+    --nota-border: #383850;
+  }
+
+  /* LIGHT THEME */
+  body.light {
+    --bg: #f0f2f7;
+    --surface: #ffffff;
+    --surface2: #f5f6fa;
+    --border: #dde1ed;
+    --accent: #e8643a;
+    --accent2: #3b6fd4;
+    --green: #2e9e6b;
+    --yellow: #c9981a;
+    --red: #d63030;
+    --text: #1a1f2e;
+    --muted: #7a80a0;
+    --nota-bg: #eef0f8;
+    --nota-border: #cdd1e8;
+  }
+
+  /* THEME TOGGLE */
+  .theme-toggle {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    padding: 4px 12px;
+    color: var(--muted);
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    transition: all 0.15s;
+  }
+  .theme-toggle:hover { color: var(--text); border-color: var(--muted); }
+  .theme-toggle .toggle-icon { font-size: 0.9rem; }
+
+  /* INDICADOR DE SINCRONIZACIÓN CON SUPABASE */
+  .sync-indicator {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    padding: 4px 12px;
+    color: var(--muted);
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    transition: all 0.3s;
+    cursor: default;
+  }
+  .sync-indicator.sincronizando {
+    border-color: var(--yellow);
+    color: var(--yellow);
+  }
+  .sync-indicator.error {
+    border-color: var(--red);
+    color: var(--red);
+  }
+  .sync-indicator.ok {
+    border-color: var(--green);
+    color: var(--green);
+  }
+  /* Animación de rotación para el icono cuando está sincronizando */
+  @keyframes girando {
+    from { transform: rotate(0deg); }
+    to   { transform: rotate(360deg); }
+  }
+  .sync-indicator.sincronizando .sync-icon {
+    display: inline-block;
+    animation: girando 1s linear infinite;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: var(--sans);
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    padding: 24px;
+  }
+
+  /* LAYOUT PRINCIPAL */
+  .app {
+    max-width: 1100px;
+    margin: 0 auto;
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+  }
+
+  /* El layout de columnas: grid de 2 columnas.
+     .layout-col usa display:contents para que las burbujas sean
+     hijos directos del grid y puedan usar grid-column libremente.
+  */
+  .layout-columnas {
+    display: grid;
+    grid-template-columns: 380px 1fr;
+    gap: 20px;
+    align-items: start;
+  }
+
+  /**
+   * Las columnas son contenedores lógicos, no visuales.
+   * display:contents hace que sus hijos participen directamente
+   * en el grid padre, permitiendo que el Kanban use grid-column: 1/-1.
+   */
+  .layout-col {
+    display: contents;
+  }
+
+  /**
+   * La burbuja Kanban SIEMPRE ocupa las dos columnas del grid,
+   * independientemente de en qué columna lógica esté situada.
+   */
+  #burbuja-kanban {
+    grid-column: 1 / -1;
+  }
+
+
+
+  header {
+    grid-column: 1 / -1;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding-bottom: 16px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .logo {
+    font-family: var(--mono);
+    font-size: 1.1rem;
+    color: var(--accent);
+    letter-spacing: -0.02em;
+  }
+  .logo span { color: var(--muted); }
+
+  .header-stats {
+    display: flex;
+    gap: 20px;
+    font-size: 0.78rem;
+    color: var(--muted);
+    font-family: var(--mono);
+  }
+  .header-stats strong { color: var(--text); }
+
+  /* PANEL BASE */
+  .panel {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 20px;
+  }
+
+  .panel-title {
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    color: var(--muted);
+    margin-bottom: 16px;
+    font-family: var(--mono);
+  }
+
+  /* POMODORO */
+  .pomodoro-panel {
+    grid-column: 1;
+    grid-row: 2;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+
+  /* Timer display */
+  .timer-display {
+    text-align: center;
+    padding: 24px 0 16px;
+  }
+
+  .timer-mode {
+    font-size: 0.7rem;
+    font-family: var(--mono);
+    text-transform: uppercase;
+    letter-spacing: 0.15em;
+    color: var(--accent);
+    margin-bottom: 8px;
+  }
+
+  .timer-clock {
+    font-family: var(--mono);
+    font-size: 4.5rem;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    color: var(--text);
+    line-height: 1;
+  }
+
+  .timer-dots {
+    display: flex;
+    justify-content: center;
+    gap: 6px;
+    margin-top: 16px;
+  }
+
+  .timer-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--border);
+    transition: background 0.3s;
+  }
+  .timer-dot.done { background: var(--accent); }
+  .timer-dot.active { background: var(--accent); animation: pulse 1s infinite; }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+  }
+
+  /* Progress bar */
+  .timer-progress {
+    height: 3px;
+    background: var(--border);
+    border-radius: 2px;
+    overflow: hidden;
+    margin: 0 4px;
+  }
+  .timer-progress-fill {
+    height: 100%;
+    background: var(--accent);
+    transition: width 1s linear;
+    border-radius: 2px;
+  }
+
+  /* Controls */
+  .timer-controls {
+    display: flex;
+    gap: 8px;
+    justify-content: center;
+  }
+
+  .btn {
+    border: none;
+    cursor: pointer;
+    font-family: var(--sans);
+    font-weight: 500;
+    border-radius: 8px;
+    transition: all 0.15s;
+    font-size: 0.85rem;
+  }
+  .btn:active { transform: scale(0.97); }
+
+  .btn-primary {
+    background: var(--accent);
+    color: #fff;
+    padding: 10px 28px;
+    font-size: 0.9rem;
+    font-weight: 600;
+  }
+  .btn-primary:hover { background: #d4562f; }
+
+  .btn-secondary {
+    background: var(--surface2);
+    color: var(--muted);
+    padding: 10px 16px;
+    border: 1px solid var(--border);
+  }
+  .btn-secondary:hover { color: var(--text); border-color: var(--muted); }
+
+  .btn-sm {
+    padding: 6px 12px;
+    font-size: 0.78rem;
+  }
+
+  /* Task selector */
+  .task-selector select {
+    width: 100%;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text);
+    padding: 8px 12px;
+    font-family: var(--sans);
+    font-size: 0.85rem;
+    cursor: pointer;
+  }
+  .task-selector select:focus { outline: none; border-color: var(--accent2); }
+  .task-selector label { font-size: 0.75rem; color: var(--muted); display: block; margin-bottom: 6px; }
+
+  /* Config */
+  .config-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 10px;
+  }
+
+  .config-field label {
+    font-size: 0.7rem;
+    color: var(--muted);
+    display: block;
+    margin-bottom: 4px;
+    font-family: var(--mono);
+  }
+
+  .config-field input {
+    width: 100%;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    padding: 6px 8px;
+    font-family: var(--mono);
+    font-size: 0.9rem;
+    text-align: center;
+  }
+  .config-field input:focus { outline: none; border-color: var(--accent2); }
+
+  /* TASKS PANEL */
+  .tasks-panel {
+    grid-column: 2;
+    grid-row: 2;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    overflow: hidden;
+  }
+
+  /* Add task form */
+  .task-form {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .task-form-row {
+    display: flex;
+    gap: 8px;
+  }
+
+  .input-field {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text);
+    padding: 8px 12px;
+    font-family: var(--sans);
+    font-size: 0.85rem;
+    transition: border-color 0.15s;
+  }
+  .input-field:focus { outline: none; border-color: var(--accent2); }
+  .input-field::placeholder { color: var(--muted); }
+  .input-field.grow { flex: 1; }
+
+  .tag-select {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text);
+    padding: 8px 10px;
+    font-family: var(--sans);
+    font-size: 0.82rem;
+    cursor: pointer;
+  }
+  .tag-select:focus { outline: none; border-color: var(--accent2); }
+
+  /* Filters */
+  .filters {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+    align-items: center;
+  }
+
+  .filter-btn {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    color: var(--muted);
+    padding: 4px 12px;
+    font-size: 0.75rem;
+    cursor: pointer;
+    font-family: var(--sans);
+    transition: all 0.15s;
+  }
+  .filter-btn:hover, .filter-btn.active {
+    border-color: var(--accent2);
+    color: var(--accent2);
+    background: rgba(91,138,240,0.08);
+  }
+
+  /* Task list */
+  .task-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    overflow-y: auto;
+    max-height: calc(100vh - 340px);
+    padding-right: 4px;
+  }
+
+  .task-list::-webkit-scrollbar { width: 4px; }
+  .task-list::-webkit-scrollbar-track { background: transparent; }
+  .task-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+  .task-item {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 12px 14px;
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    transition: border-color 0.15s, opacity 0.2s;
+    cursor: default;
+  }
+  .task-item:hover { border-color: var(--muted); }
+  .task-item.completed { opacity: 0.45; }
+  .task-item.active-task { border-color: var(--accent); background: rgba(232,100,58,0.06); }
+
+  .task-check {
+    width: 18px;
+    height: 18px;
+    border: 2px solid var(--border);
+    border-radius: 50%;
+    flex-shrink: 0;
+    margin-top: 2px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.15s;
+    font-size: 0.65rem;
+  }
+  .task-item.completed .task-check { background: var(--green); border-color: var(--green); color: #fff; }
+  .task-check:hover { border-color: var(--green); }
+
+  .task-body { flex: 1; min-width: 0; }
+
+  .task-desc {
+    font-size: 0.875rem;
+    line-height: 1.4;
+    word-break: break-word;
+  }
+  .task-item.completed .task-desc { text-decoration: line-through; }
+
+  .task-meta {
+    display: flex;
+    gap: 10px;
+    margin-top: 5px;
+    flex-wrap: wrap;
+    align-items: center;
+  }
+
+  .task-tag {
+    font-size: 0.68rem;
+    padding: 2px 8px;
+    border-radius: 20px;
+    font-weight: 500;
+    background: rgba(91,138,240,0.15);
+    color: var(--accent2);
+  }
+
+  .task-date {
+    font-size: 0.68rem;
+    color: var(--muted);
+    font-family: var(--mono);
+  }
+
+  .task-pomodoros {
+    font-size: 0.68rem;
+    color: var(--accent);
+    font-family: var(--mono);
+  }
+
+  .task-actions {
+    display: flex;
+    gap: 4px;
+    flex-shrink: 0;
+  }
+
+  .icon-btn {
+    background: none;
+    border: none;
+    cursor: pointer;
+    color: var(--muted);
+    padding: 4px;
+    border-radius: 4px;
+    font-size: 0.8rem;
+    transition: all 0.15s;
+    line-height: 1;
+  }
+  .icon-btn:hover { background: var(--border); color: var(--text); }
+  .icon-btn.danger:hover { color: var(--red); }
+
+  /* EDIT MODE */
+  .task-item.editing {
+    border-color: var(--accent2);
+    background: color-mix(in srgb, var(--accent2) 6%, var(--surface));
+  }
+  .task-edit-form {
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px solid var(--border);
+  }
+  .task-edit-row { display: flex; gap: 6px; }
+  .task-edit-row .input-field { flex: 1; }
+  .task-edit-actions { display: flex; gap: 6px; margin-top: 2px; }
+  .btn-save {
+    background: var(--accent2);
+    color: #fff;
+    border: none;
+    border-radius: 6px;
+    padding: 5px 14px;
+    font-size: 0.78rem;
+    font-weight: 600;
+    cursor: pointer;
+    font-family: var(--sans);
+    transition: opacity 0.15s;
+  }
+  .btn-save:hover { opacity: 0.85; }
+  .btn-cancel {
+    background: var(--surface2);
+    color: var(--muted);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 5px 12px;
+    font-size: 0.78rem;
+    font-weight: 500;
+    cursor: pointer;
+    font-family: var(--sans);
+    transition: all 0.15s;
+  }
+  .btn-cancel:hover { color: var(--text); border-color: var(--muted); }
+
+  input[type="date"] { color-scheme: dark; }
+  body.light input[type="date"] { color-scheme: light; }
+
+  /* STATS */
+  .stats-panel {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 20px;
+  }
+
+  .stats-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 12px;
+    margin-bottom: 16px;
+  }
+
+  .stat-card {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px;
+    text-align: center;
+  }
+
+  .stat-num {
+    font-family: var(--mono);
+    font-size: 1.6rem;
+    font-weight: 700;
+    color: var(--accent);
+  }
+
+  .stat-label {
+    font-size: 0.68rem;
+    color: var(--muted);
+    margin-top: 2px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+
+  /* Session history */
+  .session-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    max-height: 160px;
+    overflow-y: auto;
+    padding-right: 4px;
+  }
+
+  .session-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    background: var(--surface2);
+    border-radius: 6px;
+    padding: 7px 10px;
+    font-size: 0.75rem;
+  }
+  .session-task { color: var(--text); flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .session-meta { color: var(--muted); font-family: var(--mono); font-size: 0.68rem; flex-shrink: 0; margin-left: 10px; }
+
+  /* Data panel */
+  .data-actions {
+    display: flex;
+    gap: 8px;
+  }
+
+  /* Notification */
+  .notif {
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    background: var(--surface);
+    border: 1px solid var(--accent);
+    border-radius: 10px;
+    padding: 12px 18px;
+    font-size: 0.85rem;
+    z-index: 999;
+    transform: translateX(120%);
+    transition: transform 0.3s ease;
+    max-width: 280px;
+  }
+  .notif.show { transform: translateX(0); }
+  .notif-title { font-weight: 600; color: var(--accent); margin-bottom: 2px; }
+
+  /* Divider */
+  .divider {
+    height: 1px;
+    background: var(--border);
+    margin: 4px 0;
+  }
+
+  /* Empty state */
+  .empty {
+    text-align: center;
+    color: var(--muted);
+    font-size: 0.82rem;
+    padding: 24px;
+  }
+
+  /* ---- PANELES ARRASTRABLES ---- */
+
+  /* Burbuja arrastrable */
+  .burbuja {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+    transition: box-shadow 0.2s, opacity 0.2s;
+  }
+
+  /* Estado mientras se arrastra */
+  .burbuja.arrastrando {
+    opacity: 0.35;
+    box-shadow: 0 12px 40px rgba(0,0,0,0.5);
+  }
+
+  /* Indicador visual de zona de drop */
+  .drop-placeholder {
+    border: 2px dashed var(--accent2);
+    border-radius: var(--radius);
+    height: 60px;
+    background: rgba(91,138,240,0.06);
+    transition: all 0.15s;
+  }
+
+  /* Cabecera de la burbuja: título + handle */
+  .burbuja-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 16px 0;
+    user-select: none;
+  }
+
+  /* El cursor grab solo sobre el handle, no en toda la cabecera */
+  .drag-handle {
+    cursor: grab;
+    color: var(--border);
+    font-size: 1rem;
+    transition: color 0.15s;
+    line-height: 1;
+    padding: 4px 6px;
+    border-radius: 4px;
+    transition: color 0.15s, background 0.15s;
+  }
+  .drag-handle:active { cursor: grabbing; }
+  .burbuja:hover .drag-handle { color: var(--muted); }
+  .drag-handle:hover { color: var(--text) !important; background: var(--border); }
+
+  /* Cuerpo de la burbuja */
+  .burbuja-body { padding: 0 16px 16px; }
+
+  /* Burbuja especial: nota */
+  .burbuja.burbuja-nota {
+    background: var(--nota-bg);
+    border-color: var(--nota-border);
+  }
+
+  /* ---- SECCIONES COLAPSABLES dentro del temporizador ---- */
+  .seccion-colapsable { border-top: 1px solid var(--border); margin-top: 12px; }
+
+  .seccion-toggle {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 0 8px;
+    background: none;
+    border: none;
+    cursor: pointer;
+    color: var(--muted);
+    font-family: var(--mono);
+    font-size: 0.68rem;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    transition: color 0.15s;
+  }
+  .seccion-toggle:hover { color: var(--text); }
+
+  .seccion-flecha {
+    font-size: 0.65rem;
+    transition: transform 0.2s;
+    display: inline-block;
+  }
+  .seccion-toggle.abierto .seccion-flecha { transform: rotate(180deg); }
+
+  .seccion-contenido {
+    overflow: hidden;
+    transition: max-height 0.28s ease, opacity 0.2s;
+    max-height: 0;
+    opacity: 0;
+  }
+  .seccion-contenido.visible {
+    max-height: 300px;
+    opacity: 1;
+  }
+
+  /* Bottom section (antigua — mantenida para compatibilidad de nota/datos apilados) */
+  .bottom-section {
+    display: contents; /* los hijos participan en el grid padre directamente */
+  }
+
+  /* Clasificación de duración de tarea */
+  .dur-badge {
+    font-size: 0.65rem;
+    padding: 2px 8px;
+    border-radius: 20px;
+    font-weight: 600;
+    font-family: var(--mono);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+  .dur-rapida { background: var(--dur-rapida-bg); color: var(--dur-rapida-color); }
+  .dur-media  { background: var(--dur-media-bg);  color: var(--dur-media-color); }
+  .dur-larga  { background: var(--dur-larga-bg);  color: var(--dur-larga-color); }
+
+  /* Panel de nota — tonalidad levemente distinta */
+  .nota-panel {
+    background: var(--nota-bg);
+    border: 1px solid var(--nota-border);
+    border-radius: var(--radius);
+    padding: 20px;
+  }
+  .nota-panel .panel-title { margin-bottom: 12px; }
+
+  /* Textarea de nota */
+  .nota-textarea {
+    width: 100%;
+    min-height: 180px;
+    background: transparent;
+    border: 1px solid var(--nota-border);
+    border-radius: 8px;
+    color: var(--text);
+    padding: 10px 12px;
+    font-family: var(--sans);
+    font-size: 0.85rem;
+    line-height: 1.6;
+    resize: none;
+    transition: border-color 0.15s, height 0.1s;
+    overflow-y: auto;
+    box-sizing: border-box;
+  }
+  .nota-textarea:focus { outline: none; border-color: var(--accent2); }
+  .nota-textarea::placeholder { color: var(--muted); }
+
+  /* Control de altura configurable */
+  .nota-altura-control {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-top: 10px;
+  }
+  .nota-altura-control label {
+    font-size: 0.65rem;
+    color: var(--muted);
+    font-family: var(--mono);
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+  .nota-altura-slider {
+    flex: 1;
+    -webkit-appearance: none;
+    appearance: none;
+    height: 3px;
+    border-radius: 2px;
+    background: var(--border);
+    outline: none;
+    cursor: pointer;
+  }
+  .nota-altura-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: var(--accent2);
+    cursor: pointer;
+    transition: background 0.15s;
+  }
+  .nota-altura-slider:hover::-webkit-slider-thumb { background: var(--accent); }
+  .nota-altura-slider::-moz-range-thumb {
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: var(--accent2);
+    cursor: pointer;
+    border: none;
+  }
+  .nota-altura-px {
+    font-size: 0.65rem;
+    color: var(--muted);
+    font-family: var(--mono);
+    min-width: 40px;
+    text-align: right;
+    flex-shrink: 0;
+  }
+
+  /* Indicador de guardado de nota */
+  .nota-guardado {
+    font-size: 0.7rem;
+    color: var(--green);
+    font-family: var(--mono);
+    margin-top: 6px;
+    min-height: 14px;
+    transition: opacity 0.4s;
+    opacity: 0;
+  }
+  .nota-guardado.visible { opacity: 1; }
+
+  input[type="date"] {
+    color-scheme: dark;
+  }
+  body.light input[type="date"] { color-scheme: light; }
+
+  /* ---- MARKDOWN: VISOR DE NOTA ---- */
+
+  /* Botones de modo edición/previsualización */
+  .nota-modo-btns {
+    display: flex;
+    gap: 4px;
+    margin-bottom: 8px;
+  }
+  .nota-modo-btn {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--muted);
+    padding: 3px 10px;
+    font-size: 0.7rem;
+    font-family: var(--mono);
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .nota-modo-btn.activo {
+    background: var(--accent2);
+    border-color: var(--accent2);
+    color: #fff;
+  }
+  .nota-modo-btn:not(.activo):hover { color: var(--text); border-color: var(--muted); }
+
+  /* Contenedor del visor renderizado */
+  .nota-preview {
+    width: 100%;
+    min-height: 180px;
+    background: transparent;
+    border: 1px solid var(--nota-border);
+    border-radius: 8px;
+    color: var(--text);
+    padding: 10px 14px;
+    font-family: var(--sans);
+    font-size: 0.85rem;
+    line-height: 1.7;
+    box-sizing: border-box;
+    overflow-y: auto;
+    display: none; /* oculto por defecto; se muestra al activar preview */
+  }
+
+  /* Estilos para los elementos markdown renderizados */
+  .nota-preview h1, .nota-preview h2, .nota-preview h3 {
+    font-family: var(--mono);
+    color: var(--accent2);
+    margin: 0.8em 0 0.4em;
+    line-height: 1.3;
+  }
+  .nota-preview h1 { font-size: 1.1rem; border-bottom: 1px solid var(--border); padding-bottom: 4px; }
+  .nota-preview h2 { font-size: 0.95rem; }
+  .nota-preview h3 { font-size: 0.85rem; color: var(--accent); }
+  .nota-preview p  { margin: 0.5em 0; }
+  .nota-preview ul, .nota-preview ol {
+    margin: 0.4em 0 0.4em 1.4em;
+    padding: 0;
+  }
+  .nota-preview li { margin: 0.2em 0; }
+  .nota-preview code {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 1px 5px;
+    font-family: var(--mono);
+    font-size: 0.8rem;
+    color: var(--accent);
+  }
+  .nota-preview pre {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px 12px;
+    overflow-x: auto;
+    margin: 0.6em 0;
+  }
+  .nota-preview pre code {
+    background: none;
+    border: none;
+    padding: 0;
+    color: var(--text);
+    font-size: 0.78rem;
+  }
+  .nota-preview blockquote {
+    border-left: 3px solid var(--accent2);
+    margin: 0.6em 0;
+    padding: 4px 12px;
+    color: var(--muted);
+    background: rgba(91,138,240,0.06);
+    border-radius: 0 6px 6px 0;
+  }
+  .nota-preview hr {
+    border: none;
+    border-top: 1px solid var(--border);
+    margin: 1em 0;
+  }
+  .nota-preview a { color: var(--accent2); }
+  .nota-preview strong { color: var(--text); font-weight: 600; }
+  .nota-preview em { color: var(--yellow); }
+  .nota-preview table {
+    border-collapse: collapse;
+    width: 100%;
+    font-size: 0.8rem;
+    margin: 0.6em 0;
+  }
+  .nota-preview th, .nota-preview td {
+    border: 1px solid var(--border);
+    padding: 5px 10px;
+    text-align: left;
+  }
+  .nota-preview th { background: var(--surface2); color: var(--accent2); font-family: var(--mono); }
+
+  /* ---- ETIQUETA DE INTERVALO en tarea ---- */
+  .task-intervalo {
+    font-size: 0.64rem;
+    color: var(--muted);
+    font-family: var(--mono);
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 1px 6px;
+    cursor: help;
+  }
+
+  /* ---- DRAG-TO-ASSIGN: arrastrar tarea al temporizador ---- */
+
+  /**
+   * Estilo de la tarea mientras se arrastra para asignarla al temporizador.
+   * Cursor de mano indica acción de soltar.
+   */
+  .task-item.dragging-assign {
+    opacity: 0.45;
+    cursor: grabbing;
+  }
+
+  /**
+   * Zona de drop del selector de tarea activa cuando se arrastra encima.
+   * Resalta visualmente para indicar al usuario que puede soltar aquí.
+   */
+  .task-selector.drop-activo {
+    border-radius: 8px;
+    outline: 2px dashed var(--accent);
+    outline-offset: 3px;
+    background: rgba(232, 100, 58, 0.08);
+    transition: background 0.15s;
+  }
+
+  /**
+   * El select interior también cambia cuando el drop está activo.
+   */
+  .task-selector.drop-activo select {
+    border-color: var(--accent);
+  }
+
+  /**
+   * Indicador visual del handle de arrastre en cada tarea
+   * para asignarla al temporizador.
+   */
+  .task-drag-handle {
+    cursor: grab;
+    color: var(--border);
+    font-size: 0.85rem;
+    padding: 4px 3px;
+    border-radius: 4px;
+    line-height: 1;
+    flex-shrink: 0;
+    transition: color 0.15s, background 0.15s;
+    margin-top: 1px;
+  }
+  .task-item:hover .task-drag-handle { color: var(--muted); }
+  .task-drag-handle:hover { color: var(--accent) !important; background: rgba(232,100,58,0.1); }
+  .task-drag-handle:active { cursor: grabbing; }
+
+  /* ---- COLAPSO DE BURBUJAS ---- */
+
+  /**
+   * Botón de colapso/expansión en la cabecera de cada burbuja.
+   * Comparte estilo con el drag-handle pero añade cursor pointer.
+   */
+  .burbuja-collapse-btn {
+    background: none;
+    border: none;
+    cursor: pointer;
+    color: var(--muted);
+    font-size: 0.65rem;
+    padding: 4px 6px;
+    border-radius: 4px;
+    line-height: 1;
+    font-family: var(--mono);
+    transition: color 0.15s, background 0.15s;
+    display: flex;
+    align-items: center;
+    gap: 3px;
+  }
+  .burbuja-collapse-btn:hover { color: var(--text); background: var(--border); }
+
+  /**
+   * Flecha del botón de colapso que rota según el estado.
+   */
+  .burbuja-collapse-flecha {
+    display: inline-block;
+    transition: transform 0.25s;
+    font-style: normal;
+  }
+  .burbuja.colapsada .burbuja-collapse-flecha { transform: rotate(-90deg); }
+
+  /**
+   * Cuerpo de la burbuja con animación de colapso/expansión.
+   */
+  .burbuja-body {
+    overflow: hidden;
+    transition: max-height 0.3s ease, opacity 0.25s, padding 0.3s;
+    max-height: 2000px; /* suficientemente grande para cualquier contenido */
+    opacity: 1;
+  }
+
+  /**
+   * Estado colapsado: el cuerpo se oculta visualmente.
+   */
+  .burbuja.colapsada .burbuja-body {
+    max-height: 0 !important;
+    opacity: 0;
+    padding-top: 0 !important;
+    padding-bottom: 0 !important;
+  }
+
+  /**
+   * Cuando la burbuja está colapsada, la cabecera tiene un borde inferior
+   * para delinear la burbuja mínima.
+   */
+  .burbuja.colapsada .burbuja-header {
+    padding-bottom: 14px;
+  }
+
+  /**
+   * Grupo de controles en la cabecera (handle + colapso).
+   */
+  .burbuja-header-controls {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+  }
+
+
+  /* =====================================================
+     TABLERO KANBAN
+     Burbuja con scroll horizontal que contiene 4 columnas
+     fijas: Idea·Análisis, Desarrollo, Revisión·Bloqueo, Hecho.
+     Cada columna aloja tarjetas con tareas hijas compactas.
+  ===================================================== */
+
+  /**
+   * Contenedor principal del tablero con scroll horizontal.
+   */
+  .kanban-tablero {
+    display: flex;
+    gap: 14px;
+    overflow-x: auto;
+    /* Padding derecho generoso para que la última columna nunca quede cortada */
+    padding: 4px 16px 12px 2px;
+    min-height: 200px;
+    scroll-snap-type: x mandatory;
+    /* box-sizing garantiza que el padding no añada scroll innecesario */
+    box-sizing: border-box;
+  }
+  .kanban-tablero::-webkit-scrollbar { height: 5px; }
+  .kanban-tablero::-webkit-scrollbar-track { background: transparent; }
+  .kanban-tablero::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+  /**
+   * Cada columna del tablero Kanban.
+   */
+  .kanban-columna {
+    flex: 0 0 220px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    scroll-snap-align: start;
+  }
+
+  /**
+   * Cabecera de columna con título, color de acento y contador de tarjetas.
+   */
+  .kanban-col-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 10px;
+    border-radius: 8px;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-top: 3px solid var(--col-acento, var(--muted));
+    user-select: none;
+  }
+  .kanban-col-titulo {
+    font-size: 0.7rem;
+    font-family: var(--mono);
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--text);
+    font-weight: 700;
+  }
+  .kanban-col-count {
+    font-size: 0.65rem;
+    font-family: var(--mono);
+    color: var(--muted);
+    background: var(--border);
+    border-radius: 10px;
+    padding: 1px 7px;
+  }
+
+  /* Acentos de color por columna */
+  .kanban-col-idea      { --col-acento: #5b8af0; }
+  .kanban-col-desarrollo { --col-acento: #e8c23a; }
+  .kanban-col-revision  { --col-acento: #e84a4a; }
+  .kanban-col-hecho     { --col-acento: #4caf82; }
+
+  /**
+   * Zona de drop de cada columna — se activa al arrastrar encima.
+   */
+  .kanban-columna-dropzone {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    min-height: 80px;
+    border-radius: 8px;
+    padding: 4px;
+    transition: background 0.15s, outline 0.15s;
+  }
+  .kanban-columna-dropzone.drop-activo {
+    background: rgba(91,138,240,0.07);
+    outline: 2px dashed var(--accent2);
+    outline-offset: -2px;
+  }
+
+  /**
+   * Tarjeta Kanban individual.
+   */
+  .kanban-tarjeta {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 11px 13px;
+    /* El cursor por defecto es normal: solo el título permite arrastrar */
+    cursor: default;
+    transition: box-shadow 0.2s, border-color 0.15s, opacity 0.2s;
+    user-select: none;
+  }
+  .kanban-tarjeta:hover {
+    border-color: var(--muted);
+    box-shadow: 0 4px 16px rgba(0,0,0,0.18);
+  }
+  .kanban-tarjeta.arrastrando-kanban {
+    opacity: 0.35;
+    cursor: grabbing;
+  }
+
+  /**
+   * Título de la tarjeta Kanban.
+   * Actúa como handle de arrastre: cursor grab y fondo sutil al pasar el ratón.
+   */
+  .kanban-tarjeta-titulo {
+    font-size: 0.82rem;
+    font-weight: 600;
+    color: var(--text);
+    line-height: 1.35;
+    margin-bottom: 7px;
+    word-break: break-word;
+    /* Handle de arrastre visual */
+    cursor: grab;
+    border-radius: 4px;
+    padding: 2px 4px;
+    margin: -2px -4px 5px;
+    transition: background 0.15s;
+  }
+  .kanban-tarjeta-titulo:hover {
+    background: rgba(91, 138, 240, 0.08);
+  }
+  .kanban-tarjeta-titulo:active {
+    cursor: grabbing;
+  }
+
+  /**
+   * Fila de metadatos de la tarjeta (prioridad, fecha, pomodoros).
+   */
+  .kanban-tarjeta-meta {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+    align-items: center;
+    margin-bottom: 8px;
+  }
+
+  /**
+   * Badge de prioridad con color semántico.
+   */
+  .kanban-prioridad {
+    font-size: 0.62rem;
+    font-family: var(--mono);
+    font-weight: 700;
+    text-transform: uppercase;
+    padding: 2px 7px;
+    border-radius: 20px;
+  }
+  .kanban-prioridad-alta  { background: rgba(232,74,74,0.15);   color: var(--red); }
+  .kanban-prioridad-media { background: rgba(232,194,58,0.15);  color: var(--yellow); }
+  .kanban-prioridad-baja  { background: rgba(76,175,130,0.12);  color: var(--green); }
+
+  .kanban-tarjeta-fecha {
+    font-size: 0.62rem;
+    font-family: var(--mono);
+    color: var(--muted);
+  }
+  .kanban-tarjeta-pomodoros {
+    font-size: 0.62rem;
+    font-family: var(--mono);
+    color: var(--accent);
+    margin-left: auto;
+  }
+
+  /**
+   * Lista compacta de tareas hijas dentro de la tarjeta.
+   */
+  .kanban-tareas-hijas {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    border-top: 1px solid var(--border);
+    padding-top: 7px;
+    margin-top: 2px;
+  }
+
+  /**
+   * Fila compacta de tarea hija.
+   */
+  .kanban-tarea-hija {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.72rem;
+    color: var(--muted);
+    line-height: 1.3;
+  }
+  .kanban-tarea-hija.completada {
+    text-decoration: line-through;
+    opacity: 0.55;
+  }
+  .kanban-tarea-hija-check {
+    width: 12px;
+    height: 12px;
+    border: 1.5px solid var(--border);
+    border-radius: 50%;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.5rem;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .kanban-tarea-hija.completada .kanban-tarea-hija-check {
+    background: var(--green);
+    border-color: var(--green);
+    color: #fff;
+  }
+  .kanban-tarea-hija-nombre {
+    flex: 1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    color: var(--text);
+  }
+  .kanban-tarea-hija-pomo {
+    font-size: 0.6rem;
+    color: var(--accent);
+    font-family: var(--mono);
+    flex-shrink: 0;
+  }
+
+  /**
+   * Botones de acción dentro de la tarjeta (añadir tarea hija, editar, borrar).
+   */
+  .kanban-tarjeta-acciones {
+    display: flex;
+    gap: 4px;
+    margin-top: 8px;
+    padding-top: 7px;
+    border-top: 1px solid var(--border);
+  }
+  .kanban-btn-accion {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--muted);
+    font-size: 0.68rem;
+    font-family: var(--mono);
+    padding: 3px 9px;
+    cursor: pointer;
+    transition: all 0.15s;
+    white-space: nowrap;
+  }
+  .kanban-btn-accion:hover { color: var(--text); border-color: var(--muted); }
+  .kanban-btn-accion.danger:hover { color: var(--red); border-color: var(--red); }
+
+  /**
+   * Botón de colapso de columna Kanban.
+   * Se muestra en la cabecera de cada columna para plegar/desplegar verticalmente.
+   */
+  .kanban-col-collapse-btn {
+    background: none;
+    border: none;
+    cursor: pointer;
+    color: var(--muted);
+    font-size: 0.6rem;
+    padding: 2px 5px;
+    border-radius: 4px;
+    line-height: 1;
+    font-family: var(--mono);
+    transition: color 0.15s, background 0.15s;
+    display: flex;
+    align-items: center;
+    gap: 2px;
+  }
+  .kanban-col-collapse-btn:hover { color: var(--text); background: var(--border); }
+
+  /**
+   * Flecha animada del botón de colapso de columna Kanban.
+   */
+  .kanban-col-collapse-flecha {
+    display: inline-block;
+    transition: transform 0.25s;
+    font-style: normal;
+  }
+
+  /**
+   * Cuando la columna está colapsada, la flecha rota 90° para indicar el estado.
+   */
+  .kanban-columna.kanban-col-colapsada .kanban-col-collapse-flecha {
+    transform: rotate(-90deg);
+  }
+
+  /**
+   * Zona de drop y botón de nueva tarjeta: se ocultan al colapsar la columna.
+   * Transición suave de altura y opacidad para la animación de colapso.
+   */
+  .kanban-col-cuerpo {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    overflow: hidden;
+    transition: max-height 0.3s ease, opacity 0.25s;
+    max-height: 2000px;
+    opacity: 1;
+  }
+  .kanban-columna.kanban-col-colapsada .kanban-col-cuerpo {
+    max-height: 0;
+    opacity: 0;
+  }
+
+  /**
+   * Indicador de recuento visible incluso con la columna colapsada.
+   */
+  .kanban-col-count-colapsada {
+    font-size: 0.62rem;
+    font-family: var(--mono);
+    color: var(--muted);
+    background: var(--border);
+    border-radius: 10px;
+    padding: 1px 7px;
+    display: none;
+  }
+  .kanban-columna.kanban-col-colapsada .kanban-col-count-colapsada { display: inline-block; }
+  .kanban-columna.kanban-col-colapsada .kanban-col-count { display: none; }
+
+  /**
+   * Columna colapsada: se estrecha para dejar más espacio a las columnas expandidas.
+   */
+  .kanban-columna.kanban-col-colapsada {
+    flex: 0 0 120px;
+  }
+
+  /**
+   * Botón para añadir nueva tarjeta en la columna.
+   */
+  .kanban-btn-nueva {
+    background: none;
+    border: 1px dashed var(--border);
+    border-radius: 8px;
+    color: var(--muted);
+    font-size: 0.75rem;
+    font-family: var(--sans);
+    padding: 8px;
+    cursor: pointer;
+    width: 100%;
+    text-align: center;
+    transition: all 0.15s;
+  }
+  .kanban-btn-nueva:hover {
+    border-color: var(--accent2);
+    color: var(--accent2);
+    background: rgba(91,138,240,0.05);
+  }
+
+  /**
+   * Modal/inline para crear o editar una tarjeta Kanban.
+   */
+  .kanban-form-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.55);
+    z-index: 200;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+  }
+  .kanban-form-box {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 24px;
+    width: 100%;
+    max-width: 420px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.4);
+  }
+  .kanban-form-titulo {
+    font-family: var(--mono);
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--accent2);
+    margin-bottom: 2px;
+  }
+  .kanban-form-fila {
+    display: flex;
+    gap: 8px;
+  }
+  .kanban-form-fila .input-field { flex: 1; }
+  .kanban-form-acciones {
+    display: flex;
+    gap: 8px;
+    justify-content: flex-end;
+    margin-top: 4px;
+  }
+
+  /**
+   * Badge pequeño en la tarea de lista que indica a qué proyecto Kanban pertenece.
+   */
+  .task-kanban-badge {
+    font-size: 0.62rem;
+    padding: 2px 7px;
+    border-radius: 20px;
+    background: rgba(91,138,240,0.13);
+    color: var(--accent2);
+    font-family: var(--mono);
+    cursor: default;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 120px;
+  }
+
+  /**
+   * Selector de proyecto Kanban en el formulario de nueva/edición de tarea.
+   */
+  .kanban-selector-tarea {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text);
+    padding: 8px 10px;
+    font-family: var(--sans);
+    font-size: 0.82rem;
+    cursor: pointer;
+    flex: 1;
+  }
+  .kanban-selector-tarea:focus { outline: none; border-color: var(--accent2); }
+
+  /* ---- BUSCADOR DE TAREAS ---- */
+  .search-box {
+    position: relative;
+  }
+  .search-box .search-icon {
+    position: absolute;
+    left: 10px;
+    top: 50%;
+    transform: translateY(-50%);
+    color: var(--muted);
+    font-size: 0.8rem;
+    pointer-events: none;
+  }
+  .search-box input {
+    width: 100%;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text);
+    padding: 8px 12px 8px 32px;
+    font-family: var(--sans);
+    font-size: 0.85rem;
+    transition: border-color 0.15s;
+  }
+  .search-box input:focus { outline: none; border-color: var(--accent2); }
+  .search-box input::placeholder { color: var(--muted); }
+
+  /* ---- RESPONSIVE ---- */
+
+  @media (max-width: 768px) {
+    body { padding: 12px; }
+
+    /* Layout: 1 columna en móvil */
+    .layout-columnas { grid-template-columns: 1fr; }
+    #burbuja-kanban { grid-column: 1; }
+
+    /* Header: apilar elementos */
+    header {
+      flex-direction: column;
+      gap: 10px;
+      align-items: center;
+      text-align: center;
+    }
+    header > div { flex-wrap: wrap; justify-content: center; gap: 8px !important; }
+    .header-stats { font-size: 0.7rem; gap: 8px; flex-wrap: wrap; justify-content: center; }
+
+    /* Stats: 2 columnas en vez de 4 */
+    .stats-grid { grid-template-columns: repeat(2, 1fr); }
+
+    /* Kanban: columnas más estrechas */
+    .kanban-columna { flex: 0 0 180px; }
+    .kanban-columna.kanban-col-colapsada { flex: 0 0 100px; }
+
+    /* Timer más compacto */
+    .timer-clock { font-size: 3.5rem; }
+  }
+
+  @media (max-width: 480px) {
+    /* Formulario de tareas: campos apilados */
+    .task-form-row { flex-wrap: wrap; }
+    .task-form-row > * { flex: 1 1 100%; }
+    .task-form-row > .btn { flex: 0 0 auto; }
+
+    /* Header stats ocultar etiquetas largas */
+    .header-stats { gap: 8px; font-size: 0.65rem; }
+
+    /* Timer aún más compacto */
+    .timer-clock { font-size: 3rem; }
+    .timer-display { padding: 16px 0 12px; }
+
+    /* Modal Kanban: ancho completo */
+    .kanban-form-box { padding: 16px; max-width: 100%; }
+  }</style>
+</head>
+<body>
+<div class="app">
+
+  <!-- HEADER -->
+  <header>
+    <div class="logo">🍅 pomo<span>/</span>tareas</div>
+    <div style="display:flex;align-items:center;gap:20px">
+      <div class="header-stats">
+        <span>Hoy: <strong id="stat-today">0</strong> 🍅</span>
+        <span>Total: <strong id="stat-total">0</strong> 🍅</span>
+        <span>Tareas completadas: <strong id="stat-tasks-done">0</strong></span>
+      </div>
+      <!-- Indicador de estado de sincronización con Supabase -->
+      <div class="sync-indicator" id="sync-indicator" title="Estado de sincronización con la nube">
+        <span class="sync-icon" id="sync-icon">☁️</span>
+        <span class="sync-label" id="sync-label">Sincronizado</span>
+      </div>
+      <button class="theme-toggle" onclick="toggleTheme()" id="theme-btn">
+        <span class="toggle-icon" id="theme-icon">☀️</span>
+        <span id="theme-label">Claro</span>
+      </button>
+    </div>
+  </header>
+
+  <!-- LAYOUT DE BURBUJAS ARRASTRABLES -->
+  <div class="layout-columnas" id="layout-columnas">
+
+    <!-- COLUMNA IZQUIERDA -->
+    <div class="layout-col" id="col-0" data-col="0">
+
+      <!-- BURBUJA: TEMPORIZADOR (incluye tarea asociada y configuración colapsables) -->
+      <div class="burbuja" id="burbuja-temporizador" draggable="false" data-id="temporizador">
+        <div class="burbuja-header">
+          <span class="panel-title" style="margin:0">Temporizador</span>
+          <div class="burbuja-header-controls">
+            <button class="burbuja-collapse-btn" onclick="toggleColapsoBurbuja('temporizador')" title="Colapsar/expandir">
+              <i class="burbuja-collapse-flecha">▼</i>
+            </button>
+            <span class="drag-handle" title="Arrastrar">⠿</span>
+          </div>
+        </div>
+        <div class="burbuja-body">
+
+          <!-- Display del reloj -->
+          <div class="timer-display">
+            <div class="timer-mode" id="timer-mode">TRABAJO</div>
+            <div class="timer-clock" id="timer-clock">25:00</div>
+            <div class="timer-dots" id="timer-dots"></div>
+          </div>
+
+          <div class="timer-progress" style="margin-bottom:16px">
+            <div class="timer-progress-fill" id="progress-fill" style="width:100%"></div>
+          </div>
+
+          <div class="timer-controls">
+            <button class="btn btn-secondary btn-sm" id="btn-reset" onclick="resetTimer()">↺</button>
+            <button class="btn btn-primary" id="btn-start" onclick="toggleTimer()">Iniciar</button>
+            <button class="btn btn-secondary btn-sm" onclick="skipPhase()">⏭</button>
+          </div>
+
+          <!-- Sección colapsable: Tarea asociada -->
+          <div class="seccion-colapsable">
+            <button class="seccion-toggle abierto" onclick="toggleSeccion(this)" aria-expanded="true">
+              Tarea asociada
+              <span class="seccion-flecha">▼</span>
+            </button>
+            <div class="seccion-contenido visible">
+              <div class="task-selector" id="zona-drop-tarea" style="padding-bottom:4px">
+                <label>Tarea activa para esta sesión <span style="font-size:0.62rem;color:var(--muted)">(arrastra una tarea aquí)</span></label>
+                <select id="active-task-select" onchange="onCambioTareaActiva(this)">
+                  <option value="">— Sin tarea —</option>
+                </select>
+              </div>
+            </div>
+          </div>
+
+          <!-- Sección colapsable: Configuración -->
+          <div class="seccion-colapsable">
+            <button class="seccion-toggle" onclick="toggleSeccion(this)" aria-expanded="false">
+              Configuración (minutos)
+              <span class="seccion-flecha">▼</span>
+            </button>
+            <div class="seccion-contenido">
+              <div class="config-grid" style="padding-bottom:4px">
+                <div class="config-field">
+                  <label>Trabajo</label>
+                  <input type="number" id="cfg-work" value="20" min="1" max="120" onchange="updateConfig()">
+                </div>
+                <div class="config-field">
+                  <label>Descanso</label>
+                  <input type="number" id="cfg-short" value="5" min="1" max="60" onchange="updateConfig()">
+                </div>
+                <div class="config-field">
+                  <label>Largo (×3)</label>
+                  <input type="number" id="cfg-long" value="15" min="1" max="60" onchange="updateConfig()">
+                </div>
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+
+      <!-- BURBUJA: ESTADÍSTICAS -->
+      <div class="burbuja" id="burbuja-estadisticas" draggable="false" data-id="estadisticas">
+        <div class="burbuja-header">
+          <span class="panel-title" style="margin:0">Estadísticas</span>
+          <div class="burbuja-header-controls">
+            <button class="burbuja-collapse-btn" onclick="toggleColapsoBurbuja('estadisticas')" title="Colapsar/expandir">
+              <i class="burbuja-collapse-flecha">▼</i>
+            </button>
+            <span class="drag-handle" title="Arrastrar">⠿</span>
+          </div>
+        </div>
+        <div class="burbuja-body">
+          <div class="stats-grid" style="margin-top:12px">
+            <div class="stat-card"><div class="stat-num" id="s-today">0</div><div class="stat-label">Hoy</div></div>
+            <div class="stat-card"><div class="stat-num" id="s-total">0</div><div class="stat-label">Total 🍅</div></div>
+            <div class="stat-card"><div class="stat-num" id="s-tasks">0</div><div class="stat-label">Tareas ✓</div></div>
+            <div class="stat-card"><div class="stat-num" id="s-streak">0</div><div class="stat-label">Horas focus</div></div>
+          </div>
+          <div class="panel-title" style="margin:14px 0 8px">Sesiones recientes</div>
+          <div class="session-list" id="session-list">
+            <div class="empty">Sin sesiones registradas</div>
+          </div>
+        </div>
+      </div>
+
+    </div><!-- /col-0 -->
+
+    <!-- COLUMNA DERECHA -->
+    <div class="layout-col" id="col-1" data-col="1">
+
+      <!-- BURBUJA: TAREAS -->
+      <div class="burbuja" id="burbuja-tareas" draggable="false" data-id="tareas">
+        <div class="burbuja-header">
+          <span class="panel-title" style="margin:0">Gestión de tareas</span>
+          <div class="burbuja-header-controls">
+            <button class="burbuja-collapse-btn" onclick="toggleColapsoBurbuja('tareas')" title="Colapsar/expandir">
+              <i class="burbuja-collapse-flecha">▼</i>
+            </button>
+            <span class="drag-handle" title="Arrastrar">⠿</span>
+          </div>
+        </div>
+        <div class="burbuja-body">
+
+          <!-- Formulario nueva tarea -->
+          <div class="task-form" style="margin-top:12px">
+            <div class="task-form-row">
+              <input type="text" class="input-field grow" id="task-input" placeholder="Nueva tarea..." onkeydown="if(event.key==='Enter')addTask()">
+              <select class="tag-select" id="task-tag">
+                <option value="">Sin etiqueta</option>
+                <option value="Trabajo">💼 Trabajo</option>
+                <option value="Personal">🏠 Personal</option>
+                <option value="Estudio">📚 Estudio</option>
+                <option value="Proyecto">⚙️ Proyecto</option>
+                <option value="Otro">📌 Otro</option>
+              </select>
+            </div>
+            <div class="task-form-row">
+              <input type="date" class="input-field grow" id="task-due" title="Fecha límite (opcional)">
+              <select class="tag-select" id="task-duracion" title="Duración estimada">
+                <option value="">⏳ Duración</option>
+                <option value="rapida">⚡ Rápida</option>
+                <option value="media">🕐 Media</option>
+                <option value="larga">🗓 Larga</option>
+              </select>
+              <button class="btn btn-primary btn-sm" onclick="addTask()">+ Añadir</button>
+            </div>
+            <!-- Selector opcional de proyecto Kanban al crear tarea -->
+            <div class="task-form-row">
+              <select class="kanban-selector-tarea" id="task-kanban" title="Vincular a proyecto Kanban (opcional)">
+                <option value="">📋 Sin proyecto Kanban</option>
+              </select>
+            </div>
+          </div>
+
+          <!-- Buscador de tareas -->
+          <div class="search-box">
+            <span class="search-icon">🔍</span>
+            <input type="text" id="task-search" placeholder="Buscar tareas..." oninput="onSearchChange()">
+          </div>
+
+          <!-- Filtros -->
+          <div class="filters" id="filters-container">
+            <button class="filter-btn active" onclick="setFilter('all', this)">Todas</button>
+            <button class="filter-btn" onclick="setFilter('pending', this)">Pendientes</button>
+            <button class="filter-btn" onclick="setFilter('done', this)">Completadas</button>
+            <span style="color:var(--border);margin:0 4px">|</span>
+            <button class="filter-btn" onclick="setTagFilter('Trabajo', this)">💼</button>
+            <button class="filter-btn" onclick="setTagFilter('Personal', this)">🏠</button>
+            <button class="filter-btn" onclick="setTagFilter('Estudio', this)">📚</button>
+            <button class="filter-btn" onclick="setTagFilter('Proyecto', this)">⚙️</button>
+            <button class="filter-btn" onclick="setTagFilter('Otro', this)">📌</button>
+            <span style="color:var(--border);margin:0 4px">|</span>
+            <button class="filter-btn" onclick="setDuracionFilter('rapida', this)" title="Rápidas">⚡</button>
+            <button class="filter-btn" onclick="setDuracionFilter('media', this)" title="Media duración">🕐</button>
+            <button class="filter-btn" onclick="setDuracionFilter('larga', this)" title="Larga duración">🗓</button>
+          </div>
+
+          <!-- Lista de tareas -->
+          <div class="task-list" id="task-list"></div>
+
+        </div>
+      </div>
+
+      <!-- BURBUJA: NOTA -->
+      <div class="burbuja burbuja-nota" id="burbuja-nota" draggable="false" data-id="nota">
+        <div class="burbuja-header">
+          <span class="panel-title" style="margin:0">📝 Nota</span>
+          <div class="burbuja-header-controls">
+            <button class="burbuja-collapse-btn" onclick="toggleColapsoBurbuja('nota')" title="Colapsar/expandir">
+              <i class="burbuja-collapse-flecha">▼</i>
+            </button>
+            <span class="drag-handle" title="Arrastrar">⠿</span>
+          </div>
+        </div>
+        <div class="burbuja-body">
+          <!-- Botones para alternar entre edición y previsualización Markdown -->
+          <div class="nota-modo-btns" style="margin-top:10px">
+            <button class="nota-modo-btn activo" id="nota-btn-editar" onclick="cambiarModoNota('editar')">✏️ Editar</button>
+            <button class="nota-modo-btn" id="nota-btn-preview" onclick="cambiarModoNota('preview')">👁 Preview</button>
+          </div>
+          <!-- Área de edición de texto plano -->
+          <textarea
+            class="nota-textarea"
+            id="nota-textarea"
+            placeholder="Escribe aquí tu nota en Markdown... (se guarda automáticamente)"
+            oninput="guardarNota()"
+          ></textarea>
+          <!-- Visor de Markdown renderizado (oculto en modo edición) -->
+          <div class="nota-preview" id="nota-preview"></div>
+          <!-- Control deslizante para ajustar la altura del textarea -->
+          <div class="nota-altura-control">
+            <label>Alto</label>
+            <input
+              type="range"
+              class="nota-altura-slider"
+              id="nota-altura-slider"
+              min="80"
+              max="600"
+              step="20"
+              value="180"
+              oninput="ajustarAltaNota(this.value)"
+            >
+            <span class="nota-altura-px" id="nota-altura-px">180px</span>
+          </div>
+          <div class="nota-guardado" id="nota-guardado">✓ Guardado</div>
+        </div>
+      </div>
+
+      <!-- BURBUJA: DATOS -->
+      <div class="burbuja" id="burbuja-datos" draggable="false" data-id="datos">
+        <div class="burbuja-header">
+          <span class="panel-title" style="margin:0">Datos</span>
+          <div class="burbuja-header-controls">
+            <button class="burbuja-collapse-btn" onclick="toggleColapsoBurbuja('datos')" title="Colapsar/expandir">
+              <i class="burbuja-collapse-flecha">▼</i>
+            </button>
+            <span class="drag-handle" title="Arrastrar">⠿</span>
+          </div>
+        </div>
+        <div class="burbuja-body" style="padding-top:12px">
+          <p style="font-size:0.82rem;color:var(--muted);margin-bottom:14px;line-height:1.5">
+            Exporta tus tareas y sesiones como JSON para hacer copia de seguridad, o importa datos previamente guardados.
+          </p>
+          <div class="data-actions">
+            <button class="btn btn-secondary" onclick="exportData()">⬇ Exportar JSON</button>
+            <button class="btn btn-secondary" onclick="document.getElementById('import-file').click()">⬆ Importar JSON</button>
+            <input type="file" id="import-file" accept=".json" style="display:none" onchange="importData(event)">
+          </div>
+          <div class="divider" style="margin-top:16px"></div>
+          <p style="font-size:0.75rem;color:var(--muted);margin-top:12px">
+            Los datos se guardan automáticamente en el navegador (localStorage).
+          </p>
+        </div>
+      </div>
+
+      <!-- BURBUJA: KANBAN (ocupa siempre las 2 columnas via CSS) -->
+      <div class="burbuja" id="burbuja-kanban" draggable="false" data-id="kanban">
+        <div class="burbuja-header">
+          <span class="panel-title" style="margin:0">📋 Tablero Kanban</span>
+          <div class="burbuja-header-controls">
+            <button class="burbuja-collapse-btn" onclick="toggleColapsoBurbuja('kanban')" title="Colapsar/expandir">
+              <i class="burbuja-collapse-flecha">▼</i>
+            </button>
+            <span class="drag-handle" title="Arrastrar">⠿</span>
+          </div>
+        </div>
+        <div class="burbuja-body">
+          <div class="kanban-tablero" id="kanban-tablero" style="margin-top:12px">
+
+            <!-- Columna: Idea · Análisis -->
+            <div class="kanban-columna kanban-col-idea" data-columna="idea">
+              <div class="kanban-col-header">
+                <span class="kanban-col-titulo">💡 Idea · Análisis</span>
+                <div style="display:flex;align-items:center;gap:4px">
+                  <span class="kanban-col-count" id="kcount-idea">0</span>
+                  <span class="kanban-col-count-colapsada" id="kcount-col-idea">0</span>
+                  <button class="kanban-col-collapse-btn" onclick="toggleColumnaKanban('idea')" title="Plegar/desplegar columna">
+                    <i class="kanban-col-collapse-flecha">▼</i>
+                  </button>
+                </div>
+              </div>
+              <div class="kanban-col-cuerpo">
+                <div class="kanban-columna-dropzone" id="kdrop-idea"
+                     ondragover="onKanbanDragOver(event,'idea')"
+                     ondragleave="onKanbanDragLeave(event,'idea')"
+                     ondrop="onKanbanDrop(event,'idea')">
+                </div>
+                <button class="kanban-btn-nueva" onclick="abrirModalKanban(null,'idea')">+ Nueva tarjeta</button>
+              </div>
+            </div>
+
+            <!-- Columna: Desarrollo -->
+            <div class="kanban-columna kanban-col-desarrollo" data-columna="desarrollo">
+              <div class="kanban-col-header">
+                <span class="kanban-col-titulo">🔨 Desarrollo</span>
+                <div style="display:flex;align-items:center;gap:4px">
+                  <span class="kanban-col-count" id="kcount-desarrollo">0</span>
+                  <span class="kanban-col-count-colapsada" id="kcount-col-desarrollo">0</span>
+                  <button class="kanban-col-collapse-btn" onclick="toggleColumnaKanban('desarrollo')" title="Plegar/desplegar columna">
+                    <i class="kanban-col-collapse-flecha">▼</i>
+                  </button>
+                </div>
+              </div>
+              <div class="kanban-col-cuerpo">
+                <div class="kanban-columna-dropzone" id="kdrop-desarrollo"
+                     ondragover="onKanbanDragOver(event,'desarrollo')"
+                     ondragleave="onKanbanDragLeave(event,'desarrollo')"
+                     ondrop="onKanbanDrop(event,'desarrollo')">
+                </div>
+                <button class="kanban-btn-nueva" onclick="abrirModalKanban(null,'desarrollo')">+ Nueva tarjeta</button>
+              </div>
+            </div>
+
+            <!-- Columna: Revisión · Bloqueo -->
+            <div class="kanban-columna kanban-col-revision" data-columna="revision">
+              <div class="kanban-col-header">
+                <span class="kanban-col-titulo">🔍 Revisión · Bloqueo</span>
+                <div style="display:flex;align-items:center;gap:4px">
+                  <span class="kanban-col-count" id="kcount-revision">0</span>
+                  <span class="kanban-col-count-colapsada" id="kcount-col-revision">0</span>
+                  <button class="kanban-col-collapse-btn" onclick="toggleColumnaKanban('revision')" title="Plegar/desplegar columna">
+                    <i class="kanban-col-collapse-flecha">▼</i>
+                  </button>
+                </div>
+              </div>
+              <div class="kanban-col-cuerpo">
+                <div class="kanban-columna-dropzone" id="kdrop-revision"
+                     ondragover="onKanbanDragOver(event,'revision')"
+                     ondragleave="onKanbanDragLeave(event,'revision')"
+                     ondrop="onKanbanDrop(event,'revision')">
+                </div>
+                <button class="kanban-btn-nueva" onclick="abrirModalKanban(null,'revision')">+ Nueva tarjeta</button>
+              </div>
+            </div>
+
+            <!-- Columna: Hecho -->
+            <div class="kanban-columna kanban-col-hecho" data-columna="hecho">
+              <div class="kanban-col-header">
+                <span class="kanban-col-titulo">✅ Hecho</span>
+                <div style="display:flex;align-items:center;gap:4px">
+                  <span class="kanban-col-count" id="kcount-hecho">0</span>
+                  <span class="kanban-col-count-colapsada" id="kcount-col-hecho">0</span>
+                  <button class="kanban-col-collapse-btn" onclick="toggleColumnaKanban('hecho')" title="Plegar/desplegar columna">
+                    <i class="kanban-col-collapse-flecha">▼</i>
+                  </button>
+                </div>
+              </div>
+              <div class="kanban-col-cuerpo">
+                <div class="kanban-columna-dropzone" id="kdrop-hecho"
+                     ondragover="onKanbanDragOver(event,'hecho')"
+                     ondragleave="onKanbanDragLeave(event,'hecho')"
+                     ondrop="onKanbanDrop(event,'hecho')">
+                </div>
+                <button class="kanban-btn-nueva" onclick="abrirModalKanban(null,'hecho')">+ Nueva tarjeta</button>
+              </div>
+            </div>
+
+          </div>
+        </div>
+      </div>
+
+    </div><!-- /col-1 -->
+
+  </div><!-- /layout-columnas -->
+
+  <!-- MODAL PARA CREAR / EDITAR TARJETA KANBAN -->
+  <div class="kanban-form-overlay" id="kanban-modal" style="display:none" onclick="cerrarModalKanban(event)">
+    <div class="kanban-form-box" onclick="event.stopPropagation()">
+      <div class="kanban-form-titulo" id="kanban-modal-titulo">Nueva tarjeta</div>
+      <input type="hidden" id="kanban-modal-id">
+      <input type="hidden" id="kanban-modal-columna">
+      <input class="input-field" id="kanban-modal-nombre" placeholder="Título del proyecto o iniciativa...">
+      <div class="kanban-form-fila">
+        <select class="input-field tag-select" id="kanban-modal-prioridad">
+          <option value="media">🟡 Prioridad media</option>
+          <option value="alta">🔴 Prioridad alta</option>
+          <option value="baja">🟢 Prioridad baja</option>
+        </select>
+        <input type="date" class="input-field" id="kanban-modal-fecha" title="Fecha límite (opcional)">
+      </div>
+      <div class="kanban-form-acciones">
+        <button class="btn btn-secondary btn-sm" onclick="cerrarModalKanban()">Cancelar</button>
+        <button class="btn btn-primary btn-sm" onclick="guardarTarjetaKanban()">✓ Guardar</button>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- Notification toast -->
+<div class="notif" id="notif">
+  <div class="notif-title" id="notif-title">¡Tiempo!</div>
+  <div id="notif-body">La sesión ha terminado.</div>
+</div>
+
+<script>
+// ---- ESTADO DE LA APLICACIÓN ----
+let state = {
+  tasks: [],
+  sessions: [],
+  /** Estadísticas globales acumuladas */
+  stats: { totalPomodoros: 0 },
+  /** Nota libre del usuario (texto plano con soporte Markdown) */
+  nota: '',
+  /**
+   * Contador de intervalos Pomodoro completados por fecha.
+   * Clave: 'ddmmaaaa', valor: número de intervalos completados ese día.
+   */
+  contadoresIntervalos: {},
+  /**
+   * Tarjetas del tablero Kanban.
+   * Cada tarjeta representa un proyecto o iniciativa con recorrido en el tiempo.
+   * Las tareas de la lista pueden vincularse a una tarjeta mediante su idKanban.
+   * @type {Array<{id:string, titulo:string, columna:string, prioridad:string, fechaLimite:string, creada:string}>}
+   */
+  tarjetasKanban: []
+};
+
+let timer = {
+  running: false,
+  phase: 'work', // work | short | long
+  pomodoroCount: 0,
+  secondsLeft: 0,
+  totalSeconds: 0,
+  interval: null
+};
+
+let cfg = { work: 20, short: 5, long: 15 };
+let activeFilter = 'all';
+let activeTagFilter = '';
+/** Filtro activo de duración estimada: 'rapida' | 'media' | 'larga' | '' */
+let activeDuracionFilter = '';
+/** Texto de búsqueda activo para filtrar tareas */
+let activeSearchQuery = '';
+
+// ====================================================================
+// INTEGRACIÓN CON SUPABASE
+// Sincronización bidireccional del estado de la aplicación con la nube.
+// Se mantiene localStorage como caché local para funcionamiento offline.
+// La sincronización remota usa debounce de 4 segundos para evitar
+// llamadas excesivas a la API en cada pequeño cambio.
+// ====================================================================
+
+/**
+ * URL pública del proyecto Supabase.
+ * @type {string}
+ */
+const SUPABASE_URL = 'https://igznpdpcdmdtxpnzbmuc.supabase.co';
+
+/**
+ * Clave pública (publishable/anon) del proyecto Supabase.
+ * Es segura para usar en el navegador.
+ * @type {string}
+ */
+const SUPABASE_KEY = 'sb_publishable_nENqnWsNIpSssLyNxoyFsw_kzCvce_V';
+
+/**
+ * Identificador de fila en la tabla estado_app.
+ * Al ser uso personal, usamos un ID fijo.
+ * @type {string}
+ */
+const SUPABASE_ROW_ID = 'principal';
+
+/**
+ * Nombre de la tabla en Supabase donde se guarda el estado.
+ * @type {string}
+ */
+const SUPABASE_TABLA = 'estado_app';
+
+/**
+ * Cliente de Supabase inicializado con URL y clave pública.
+ * @type {import('@supabase/supabase-js').SupabaseClient}
+ */
+const clienteSupabase = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+/**
+ * Temporizador para el debounce de la sincronización remota.
+ * Se reinicia en cada llamada a save() para evitar escrituras excesivas.
+ * @type {number|null}
+ */
+let _syncTimer = null;
+
+/**
+ * Actualiza el indicador visual de sincronización en la cabecera.
+ * @param {'sincronizando'|'ok'|'error'|'offline'} estado - Estado actual
+ * @param {string} [mensaje] - Texto opcional a mostrar
+ */
+function actualizarIndicadorSync(estado, mensaje) {
+  const indicador = document.getElementById('sync-indicator');
+  const icono     = document.getElementById('sync-icon');
+  const etiqueta  = document.getElementById('sync-label');
+  if (!indicador) return;
+
+  // Limpiar clases de estado anteriores
+  indicador.classList.remove('sincronizando', 'ok', 'error');
+
+  switch (estado) {
+    case 'sincronizando':
+      indicador.classList.add('sincronizando');
+      icono.textContent    = '🔄';
+      etiqueta.textContent = 'Guardando…';
+      break;
+    case 'ok':
+      indicador.classList.add('ok');
+      icono.textContent    = '☁️';
+      etiqueta.textContent = mensaje || 'Sincronizado';
+      // Volver al estado neutro tras 3 segundos
+      setTimeout(() => {
+        indicador.classList.remove('ok');
+        icono.textContent    = '☁️';
+        etiqueta.textContent = 'Sincronizado';
+      }, 3000);
+      break;
+    case 'error':
+      indicador.classList.add('error');
+      icono.textContent    = '⚠️';
+      etiqueta.textContent = mensaje || 'Error sync';
+      break;
+    case 'offline':
+      icono.textContent    = '📴';
+      etiqueta.textContent = 'Sin conexión';
+      break;
+  }
+}
+
+/**
+ * Sincroniza el estado actual con Supabase mediante upsert.
+ * Se llama desde el debounce interno de save().
+ * @returns {Promise<void>}
+ */
+async function sincronizarConSupabase() {
+  if (!navigator.onLine) {
+    actualizarIndicadorSync('offline');
+    return;
+  }
+
+  actualizarIndicadorSync('sincronizando');
+
+  try {
+    const { error } = await clienteSupabase
+      .from(SUPABASE_TABLA)
+      .upsert({ id: SUPABASE_ROW_ID, datos: state }, { onConflict: 'id' });
+
+    if (error) throw error;
+
+    actualizarIndicadorSync('ok');
+  } catch (err) {
+    console.error('Error al sincronizar con Supabase:', err);
+    actualizarIndicadorSync('error', 'Error sync');
+  }
+}
+
+// ---- PERSISTENCE ----
+
+/**
+ * Guarda el estado en localStorage de forma inmediata
+ * y programa una sincronización con Supabase con debounce de 4 segundos.
+ * Esto evita llamadas excesivas a la API en cambios rápidos sucesivos.
+ */
+function save() {
+  // Guardar siempre en localStorage (instantáneo, sin red)
+  localStorage.setItem('pomo_state', JSON.stringify(state));
+
+  // Programar sincronización remota con debounce
+  clearTimeout(_syncTimer);
+  _syncTimer = setTimeout(() => {
+    sincronizarConSupabase();
+  }, 4000);
+}
+
+/**
+ * Carga el estado desde localStorage de forma síncrona al arrancar.
+ * Acto seguido lanza una carga asíncrona desde Supabase para obtener
+ * los datos más recientes (útil al acceder desde otro dispositivo).
+ */
+function load() {
+  // 1. Carga local inmediata para no bloquear la UI
+  const raw = localStorage.getItem('pomo_state');
+  if (raw) {
+    try {
+      const saved = JSON.parse(raw);
+      state = { ...state, ...saved };
+    } catch(e) {}
+  }
+
+  // 2. Carga remota asíncrona: se aplica si Supabase tiene datos más recientes
+  cargarDesdeSupabase();
+}
+
+/**
+ * Carga el estado desde Supabase y lo aplica si es más reciente
+ * que el almacenado localmente. Re-renderiza la interfaz si hay cambios.
+ * @returns {Promise<void>}
+ */
+async function cargarDesdeSupabase() {
+  if (!navigator.onLine) return;
+
+  try {
+    const { data, error } = await clienteSupabase
+      .from(SUPABASE_TABLA)
+      .select('datos')
+      .eq('id', SUPABASE_ROW_ID)
+      .single();
+
+    if (error) {
+      // Si el error es "no rows" simplemente no hay datos remotos aún
+      if (error.code !== 'PGRST116') {
+        console.warn('Supabase: no se pudieron cargar datos remotos:', error.message);
+      }
+      return;
+    }
+
+    if (data && data.datos) {
+      // Fusionar datos remotos con el estado actual
+      state = { ...state, ...data.datos };
+      // Persistir localmente los datos recién descargados
+      localStorage.setItem('pomo_state', JSON.stringify(state));
+      // Re-renderizar la interfaz con los datos actualizados
+      renderAll();
+      actualizarIndicadorSync('ok', 'Datos cargados');
+    }
+  } catch (err) {
+    console.warn('Supabase: error inesperado al cargar:', err);
+  }
+}
+
+// ---- TIMER ----
+function phaseSeconds(phase) {
+  if (phase === 'work') return cfg.work * 60;
+  if (phase === 'short') return cfg.short * 60;
+  return cfg.long * 60;
+}
+
+function phaseLabel(phase) {
+  if (phase === 'work') return 'TRABAJO';
+  if (phase === 'short') return 'DESCANSO CORTO';
+  return 'DESCANSO LARGO';
+}
+
+function initTimer(phase) {
+  timer.phase = phase;
+  timer.secondsLeft = phaseSeconds(phase);
+  timer.totalSeconds = timer.secondsLeft;
+  updateTimerUI();
+}
+
+function toggleTimer() {
+  if (timer.running) {
+    pauseTimer();
+  } else {
+    startTimer();
+  }
+}
+
+function startTimer() {
+  timer.running = true;
+  document.getElementById('btn-start').textContent = 'Pausar';
+  timer.interval = setInterval(tick, 1000);
+  requestNotifPermission();
+}
+
+function pauseTimer() {
+  timer.running = false;
+  document.getElementById('btn-start').textContent = 'Continuar';
+  clearInterval(timer.interval);
+}
+
+function resetTimer() {
+  pauseTimer();
+  document.getElementById('btn-start').textContent = 'Iniciar';
+  initTimer(timer.phase);
+}
+
+function skipPhase() {
+  pauseTimer();
+  document.getElementById('btn-start').textContent = 'Iniciar';
+  onPhaseComplete(false);
+}
+
+function tick() {
+  timer.secondsLeft--;
+  updateTimerUI();
+  if (timer.secondsLeft <= 0) {
+    onPhaseComplete(true);
+  }
+}
+
+/**
+ * Genera un identificador único para un intervalo Pomodoro del día actual.
+ * Formato: 'ddmmaaaa[N]' donde N es el contador secuencial del día.
+ * Ejemplo: '26022026[3]' → tercer pomodoro del 26 de febrero de 2026.
+ * @returns {string} Identificador de intervalo
+ */
+function generarIdIntervalo() {
+  const ahora = new Date();
+  const dd    = String(ahora.getDate()).padStart(2, '0');
+  const mm    = String(ahora.getMonth() + 1).padStart(2, '0');
+  const aaaa  = ahora.getFullYear();
+  const claveHoy = `${dd}${mm}${aaaa}`;
+
+  // Incrementar el contador del día
+  state.contadoresIntervalos = state.contadoresIntervalos || {};
+  const contador = (state.contadoresIntervalos[claveHoy] || 0) + 1;
+  state.contadoresIntervalos[claveHoy] = contador;
+
+  return `${claveHoy}[${contador}]`;
+}
+
+/**
+ * Lógica ejecutada al terminar una fase del temporizador.
+ * Si es una fase de trabajo completada: registra la sesión con su ID de intervalo,
+ * lo asocia a la tarea activa y determina la siguiente fase.
+ * @param {boolean} completed - true si terminó naturalmente, false si se saltó
+ */
+function onPhaseComplete(completed) {
+  clearInterval(timer.interval);
+  timer.running = false;
+  document.getElementById('btn-start').textContent = 'Iniciar';
+
+  if (timer.phase === 'work' && completed) {
+    // Generar ID único para este intervalo Pomodoro
+    const idIntervalo = generarIdIntervalo();
+
+    // Registrar sesión y actualizar estadísticas
+    timer.pomodoroCount++;
+    state.stats.totalPomodoros = (state.stats.totalPomodoros || 0) + 1;
+
+    const taskSel = document.getElementById('active-task-select');
+    const taskId = taskSel.value;
+    const taskName = taskId ? (taskSel.options[taskSel.selectedIndex].text) : 'Sin tarea';
+
+    const session = {
+      id: Date.now(),
+      /** Identificador de intervalo en formato 'ddmmaaaa[N]' */
+      idIntervalo,
+      taskId,
+      taskName,
+      date: new Date().toISOString(),
+      duration: cfg.work,
+      phase: 'work'
+    };
+    state.sessions.unshift(session);
+    if (state.sessions.length > 100) state.sessions.pop();
+
+    // Registrar el intervalo completado en la tarea asociada
+    if (taskId) {
+      const t = state.tasks.find(x => x.id === taskId);
+      if (t) {
+        t.pomodoros = (t.pomodoros || 0) + 1;
+        /** Array de IDs de intervalos Pomodoro completados para esta tarea */
+        t.intervalos = t.intervalos || [];
+        t.intervalos.push(idIntervalo);
+      }
+    }
+
+    save();
+    renderStats();
+    renderTaskList();
+    playSound('work');
+    sendNotif('🍅 ¡Pomodoro completado!', `Sesión: ${cfg.work} min. Tarea: ${taskName}`);
+    showToast('🍅 ¡Pomodoro completado!', `Tarea: ${taskName}`);
+
+    // Determinar la siguiente fase
+    if (timer.pomodoroCount % 3 === 0) {
+      initTimer('long');
+    } else {
+      initTimer('short');
+    }
+  } else if (timer.phase !== 'work' && completed) {
+    playSound('break');
+    sendNotif('☕ ¡Descanso terminado!', 'Hora de volver al trabajo.');
+    showToast('☕ ¡Descanso terminado!', 'Hora de volver al trabajo.');
+    initTimer('work');
+  } else {
+    // Fase saltada manualmente
+    if (timer.phase === 'work') {
+      if (timer.pomodoroCount % 3 === 0) initTimer('long');
+      else initTimer('short');
+    } else {
+      initTimer('work');
+    }
+  }
+}
+
+function updateTimerUI() {
+  const m = Math.floor(timer.secondsLeft / 60).toString().padStart(2, '0');
+  const s = (timer.secondsLeft % 60).toString().padStart(2, '0');
+  document.getElementById('timer-clock').textContent = `${m}:${s}`;
+  document.getElementById('timer-mode').textContent = phaseLabel(timer.phase);
+
+  // Progress
+  const pct = timer.totalSeconds > 0 ? (timer.secondsLeft / timer.totalSeconds) * 100 : 100;
+  document.getElementById('progress-fill').style.width = pct + '%';
+
+  // Color accent on phase
+  const fill = document.getElementById('progress-fill');
+  if (timer.phase === 'work') fill.style.background = 'var(--accent)';
+  else if (timer.phase === 'short') fill.style.background = 'var(--green)';
+  else fill.style.background = 'var(--accent2)';
+
+  // Dots (3 dots representing the cycle)
+  const dots = document.getElementById('timer-dots');
+  dots.innerHTML = '';
+  for (let i = 0; i < 3; i++) {
+    const d = document.createElement('div');
+    d.className = 'timer-dot';
+    const cyclePos = timer.pomodoroCount % 3;
+    if (i < cyclePos) d.classList.add('done');
+    else if (i === cyclePos && timer.phase === 'work' && timer.running) d.classList.add('active');
+    dots.appendChild(d);
+  }
+}
+
+function updateConfig() {
+  cfg.work = parseInt(document.getElementById('cfg-work').value) || 20;
+  cfg.short = parseInt(document.getElementById('cfg-short').value) || 5;
+  cfg.long = parseInt(document.getElementById('cfg-long').value) || 15;
+  if (!timer.running) initTimer(timer.phase);
+}
+
+/**
+ * Se ejecuta cuando el usuario cambia la tarea activa en el selector.
+ * Si el reloj estaba pausado por haberse completado la tarea anterior,
+ * lo reanuda automáticamente. Si se elige "Sin tarea", no reanuda.
+ * @param {HTMLSelectElement} sel - El elemento select que disparó el evento
+ */
+function onCambioTareaActiva(sel) {
+  if (sel.value && !timer.running) {
+    startTimer();
+    showToast('\u25B6 Reloj reanudado', sel.options[sel.selectedIndex].text);
+  }
+}
+
+// ---- SOUND ----
+function playSound(type) {
+  const ctx = new (window.AudioContext || window.webkitAudioContext)();
+  const freqs = type === 'work' ? [660, 880, 1100] : [440, 330, 220];
+  freqs.forEach((freq, i) => {
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.frequency.value = freq;
+    osc.type = 'sine';
+    gain.gain.setValueAtTime(0.3, ctx.currentTime + i * 0.18);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + i * 0.18 + 0.4);
+    osc.start(ctx.currentTime + i * 0.18);
+    osc.stop(ctx.currentTime + i * 0.18 + 0.5);
+  });
+}
+
+// ---- NOTIFICATIONS ----
+function requestNotifPermission() {
+  if ('Notification' in window && Notification.permission === 'default') {
+    Notification.requestPermission();
+  }
+}
+
+function sendNotif(title, body) {
+  if ('Notification' in window && Notification.permission === 'granted') {
+    new Notification(title, { body, icon: '' });
+  }
+}
+
+function showToast(title, body) {
+  const n = document.getElementById('notif');
+  document.getElementById('notif-title').textContent = title;
+  document.getElementById('notif-body').textContent = body;
+  n.classList.add('show');
+  setTimeout(() => n.classList.remove('show'), 4000);
+}
+
+// ---- TASKS ----
+function addTask() {
+  const input = document.getElementById('task-input');
+  const desc = input.value.trim();
+  if (!desc) return;
+
+  const tag      = document.getElementById('task-tag').value;
+  const due      = document.getElementById('task-due').value;
+  /** Duración estimada: 'rapida' | 'media' | 'larga' | '' */
+  const duracion  = document.getElementById('task-duracion').value;
+  /** Vinculación opcional a una tarjeta Kanban */
+  const idKanban  = document.getElementById('task-kanban').value || null;
+
+  const tarea = {
+    id: Date.now().toString(),
+    desc,
+    tag,
+    due,
+    duracion,
+    /** Identificador de la tarjeta Kanban padre, o null si es independiente */
+    idKanban,
+    created: new Date().toISOString(),
+    completed: false,
+    completedAt: null,
+    pomodoros: 0
+  };
+
+  state.tasks.unshift(tarea);
+  save();
+  renderTaskList();
+  renderTaskSelect();
+  renderKanban();
+
+  input.value = '';
+  document.getElementById('task-due').value = '';
+  document.getElementById('task-duracion').value = '';
+  document.getElementById('task-kanban').value = '';
+}
+
+/**
+ * Alterna el estado completado/pendiente de una tarea.
+ * Si la tarea completada coincide con la activa en el temporizador,
+ * la elimina del selector y lo deja en blanco.
+ * @param {string} id - ID de la tarea
+ */
+function toggleTask(id) {
+  const t = state.tasks.find(x => x.id === id);
+  if (!t) return;
+  t.completed = !t.completed;
+  t.completedAt = t.completed ? new Date().toISOString() : null;
+
+  // Si se acaba de completar y era la tarea activa: limpiar selector y pausar reloj
+  if (t.completed) {
+    const sel = document.getElementById('active-task-select');
+    if (sel && sel.value === id) {
+      sel.value = '';
+      if (timer.running) {
+        pauseTimer();
+        document.getElementById('btn-start').textContent = 'Iniciar';
+        showToast('\u23F8 Reloj pausado', 'Selecciona otra tarea para continuar.');
+      }
+    }
+  }
+
+  save();
+  renderTaskList();
+  renderTaskSelect();
+  renderStats();
+  renderKanban();
+}
+
+function deleteTask(id) {
+  state.tasks = state.tasks.filter(x => x.id !== id);
+  save();
+  renderTaskList();
+  renderTaskSelect();
+  renderStats();
+}
+
+function setFilter(f, el) {
+  activeFilter = f;
+  activeTagFilter = '';
+  document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+  el.classList.add('active');
+  renderTaskList();
+}
+
+function setTagFilter(tag, el) {
+  if (activeTagFilter === tag) {
+    activeTagFilter = '';
+    el.classList.remove('active');
+    activeFilter = 'all';
+    document.querySelector('.filter-btn').classList.add('active');
+  } else {
+    activeTagFilter = tag;
+    activeFilter = 'all';
+    document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+    el.classList.add('active');
+  }
+  renderTaskList();
+}
+
+/**
+ * Activa o desactiva el filtro por duración estimada.
+ * @param {string} duracion - 'rapida' | 'media' | 'larga'
+ * @param {HTMLElement} el - Botón pulsado
+ */
+function setDuracionFilter(duracion, el) {
+  if (activeDuracionFilter === duracion) {
+    activeDuracionFilter = '';
+    el.classList.remove('active');
+    activeFilter = 'all';
+    document.querySelector('.filter-btn').classList.add('active');
+  } else {
+    activeDuracionFilter = duracion;
+    activeFilter = 'all';
+    activeTagFilter = '';
+    document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+    el.classList.add('active');
+  }
+  renderTaskList();
+}
+
+function filteredTasks() {
+  const query = activeSearchQuery.toLowerCase();
+  return state.tasks.filter(t => {
+    const statusOk   = activeFilter === 'all' || (activeFilter === 'pending' && !t.completed) || (activeFilter === 'done' && t.completed);
+    const tagOk      = !activeTagFilter || t.tag === activeTagFilter;
+    const duracionOk = !activeDuracionFilter || t.duracion === activeDuracionFilter;
+    const searchOk   = !query || t.desc.toLowerCase().includes(query);
+    return statusOk && tagOk && duracionOk && searchOk;
+  });
+}
+
+/**
+ * Actualiza el filtro de búsqueda por texto y re-renderiza la lista.
+ */
+function onSearchChange() {
+  activeSearchQuery = document.getElementById('task-search').value.trim();
+  renderTaskList();
+}
+
+function formatDate(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  return d.toLocaleDateString('es-ES', { day: '2-digit', month: '2-digit', year: '2-digit' });
+}
+
+function renderTaskList() {
+  const list = document.getElementById('task-list');
+  const tasks = filteredTasks();
+  const activeSel = document.getElementById('active-task-select').value;
+
+  if (tasks.length === 0) {
+    list.innerHTML = '<div class="empty">No hay tareas que mostrar</div>';
+    return;
+  }
+
+  /** Mapas de etiquetas y duraciones para emojis y clases CSS */
+  const tagEmoji = { Trabajo: '💼', Personal: '🏠', Estudio: '📚', Proyecto: '⚙️', Otro: '📌' };
+  const durLabel = { rapida: '⚡ Rápida', media: '🕐 Media', larga: '🗓 Larga' };
+  const durClass = { rapida: 'dur-rapida', media: 'dur-media', larga: 'dur-larga' };
+
+  list.innerHTML = tasks.map(t => {
+    const isActive  = t.id === activeSel;
+    const isEditing = t.id === editingTaskId;
+
+    // Opciones del selector de proyecto Kanban para el formulario de edición.
+    // Se excluyen las tarjetas en columna 'hecho', salvo que la propia tarea ya esté vinculada a una.
+    const opcionesKanbanEdit = (state.tarjetasKanban || [])
+      .filter(k => k.columna !== 'hecho' || k.id === t.idKanban)
+      .map(k =>
+        `<option value="${k.id}" ${t.idKanban===k.id?'selected':''}>${escHtml(k.titulo.substring(0,40))}${k.columna==='hecho' ? ' ✅' : ''}</option>`
+      ).join('');
+
+    const editForm = isEditing ? `
+      <div class="task-edit-form">
+        <input class="input-field" id="edit-desc-${t.id}" value="${escAttr(t.desc)}" placeholder="Descripción...">
+        <div class="task-edit-row">
+          <select class="input-field tag-select" id="edit-tag-${t.id}">
+            <option value="">Sin etiqueta</option>
+            <option value="Trabajo" ${t.tag==='Trabajo'?'selected':''}>💼 Trabajo</option>
+            <option value="Personal" ${t.tag==='Personal'?'selected':''}>🏠 Personal</option>
+            <option value="Estudio" ${t.tag==='Estudio'?'selected':''}>📚 Estudio</option>
+            <option value="Proyecto" ${t.tag==='Proyecto'?'selected':''}>⚙️ Proyecto</option>
+            <option value="Otro" ${t.tag==='Otro'?'selected':''}>📌 Otro</option>
+          </select>
+          <!-- Selector de duración en edición inline -->
+          <select class="input-field tag-select" id="edit-duracion-${t.id}">
+            <option value="">⏳ Duración</option>
+            <option value="rapida" ${t.duracion==='rapida'?'selected':''}>⚡ Rápida</option>
+            <option value="media"  ${t.duracion==='media' ?'selected':''}>🕐 Media</option>
+            <option value="larga"  ${t.duracion==='larga' ?'selected':''}>🗓 Larga</option>
+          </select>
+          <input type="date" class="input-field" id="edit-due-${t.id}" value="${t.due||''}">
+        </div>
+        <!-- Selector de proyecto Kanban en edición inline -->
+        <select class="kanban-selector-tarea" id="edit-kanban-${t.id}">
+          <option value="">📋 Sin proyecto Kanban</option>
+          ${opcionesKanbanEdit}
+        </select>
+        <div class="task-edit-actions">
+          <button class="btn-save" onclick="saveEdit('${t.id}')">✓ Guardar</button>
+          <button class="btn-cancel" onclick="cancelEdit()">Cancelar</button>
+        </div>
+      </div>` : '';
+
+    const badgeDuracion = t.duracion
+      ? `<span class="dur-badge ${durClass[t.duracion]}">${durLabel[t.duracion]}</span>`
+      : '';
+
+    // Badge del proyecto Kanban al que pertenece la tarea (si existe)
+    const tarjetaKanban = t.idKanban
+      ? (state.tarjetasKanban || []).find(k => k.id === t.idKanban)
+      : null;
+    const badgeKanban = tarjetaKanban
+      ? `<span class="task-kanban-badge" title="Proyecto: ${escAttr(tarjetaKanban.titulo)}">📋 ${escHtml(tarjetaKanban.titulo.substring(0,20))}</span>`
+      : '';
+
+    return `
+    <div class="task-item ${t.completed ? 'completed' : ''} ${isActive && !isEditing ? 'active-task' : ''} ${isEditing ? 'editing' : ''}"
+         data-task-id="${t.id}"
+         draggable="${t.completed ? 'false' : 'true'}"
+         ondragstart="onTareaArrastreInicio(event, '${t.id}')"
+         ondragend="onTareaArrastrarFin(event)">
+      <div class="task-check" onclick="toggleTask('${t.id}')">${t.completed ? '✓' : ''}</div>
+      <div class="task-body">
+        <div class="task-desc">${escHtml(t.desc)}</div>
+        <div class="task-meta">
+          ${t.tag ? `<span class="task-tag">${tagEmoji[t.tag] || ''} ${t.tag}</span>` : ''}
+          ${badgeDuracion}
+          ${badgeKanban}
+          <span class="task-date">📅 ${formatDate(t.created)}</span>
+          ${t.due ? `<span class="task-date">⏱ ${formatDate(t.due)}</span>` : ''}
+          ${t.pomodoros > 0 ? `<span class="task-pomodoros" title="Intervalos: ${(t.intervalos||[]).join(', ')}">🍅 ×${t.pomodoros}</span>` : ''}
+        </div>
+        ${editForm}
+      </div>
+      <div class="task-actions">
+        ${!t.completed ? `<span class="task-drag-handle" title="Arrastra para asignar al temporizador">⠿</span>` : ''}
+        <button class="icon-btn" onclick="startEdit('${t.id}')" title="Editar">✏️</button>
+        <button class="icon-btn danger" onclick="deleteTask('${t.id}')" title="Eliminar">✕</button>
+      </div>
+    </div>`;
+  }).join('');
+
+  if (editingTaskId) {
+    const el = document.getElementById(`edit-desc-${editingTaskId}`);
+    if (el) { el.focus(); el.select(); }
+  }
+}
+
+function escHtml(str) {
+  return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function escAttr(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+
+// ---- EDIT TASKS ----
+let editingTaskId = null;
+
+function startEdit(id) {
+  editingTaskId = id;
+  renderTaskList();
+}
+
+function cancelEdit() {
+  editingTaskId = null;
+  renderTaskList();
+}
+
+function saveEdit(id) {
+  const t = state.tasks.find(x => x.id === id);
+  if (!t) return;
+  const desc = document.getElementById(`edit-desc-${id}`).value.trim();
+  if (!desc) return;
+  t.desc     = desc;
+  t.tag      = document.getElementById(`edit-tag-${id}`).value;
+  t.duracion = document.getElementById(`edit-duracion-${id}`).value;
+  t.due      = document.getElementById(`edit-due-${id}`).value;
+  /** Actualizar vinculación Kanban desde la edición inline */
+  const elKanban = document.getElementById(`edit-kanban-${id}`);
+  t.idKanban = elKanban ? (elKanban.value || null) : t.idKanban;
+  editingTaskId = null;
+  save(); renderTaskList(); renderTaskSelect(); renderKanban();
+}
+
+// ---- THEME ----
+function toggleTheme() {
+  const isLight = document.body.classList.toggle('light');
+  localStorage.setItem('pomo_theme', isLight ? 'light' : 'dark');
+  document.getElementById('theme-icon').textContent = isLight ? '🌙' : '☀️';
+  document.getElementById('theme-label').textContent = isLight ? 'Oscuro' : 'Claro';
+}
+
+function loadTheme() {
+  const saved = localStorage.getItem('pomo_theme');
+  if (saved === 'light') {
+    document.body.classList.add('light');
+    document.getElementById('theme-icon').textContent = '🌙';
+    document.getElementById('theme-label').textContent = 'Oscuro';
+  }
+}
+
+function renderTaskSelect() {
+  const sel = document.getElementById('active-task-select');
+  const prev = sel.value;
+  const pending = state.tasks.filter(t => !t.completed);
+  sel.innerHTML = '<option value="">— Sin tarea —</option>' +
+    pending.map(t => `<option value="${t.id}">${escHtml(t.desc.substring(0, 50))}</option>`).join('');
+  if (prev) sel.value = prev;
+}
+
+// ---- STATS ----
+function todayPomodoros() {
+  const today = new Date().toDateString();
+  return state.sessions.filter(s => new Date(s.date).toDateString() === today && s.phase === 'work').length;
+}
+
+function totalFocusHours() {
+  const mins = state.sessions.filter(s => s.phase === 'work').reduce((a, s) => a + (s.duration || 25), 0);
+  return (mins / 60).toFixed(1);
+}
+
+function renderStats() {
+  const today = todayPomodoros();
+  const total = state.stats.totalPomodoros || 0;
+  const tasksDone = state.tasks.filter(t => t.completed).length;
+  const hours = totalFocusHours();
+
+  ['s-today', 'stat-today'].forEach(id => { const el = document.getElementById(id); if(el) el.textContent = today; });
+  ['s-total', 'stat-total'].forEach(id => { const el = document.getElementById(id); if(el) el.textContent = total; });
+  ['s-tasks', 'stat-tasks-done'].forEach(id => { const el = document.getElementById(id); if(el) el.textContent = tasksDone; });
+  const sh = document.getElementById('s-streak'); if(sh) sh.textContent = hours;
+
+  // Session list
+  const sl = document.getElementById('session-list');
+  if (state.sessions.length === 0) {
+    sl.innerHTML = '<div class="empty">Sin sesiones registradas</div>';
+    return;
+  }
+  sl.innerHTML = state.sessions.slice(0, 20).map(s => `
+    <div class="session-item">
+      <span class="session-task">🍅 ${escHtml(s.taskName)}</span>
+      <span class="session-meta" title="Intervalo: ${s.idIntervalo || '—'}">${s.duration}min · ${s.idIntervalo || ''} · ${formatDate(s.date)}</span>
+    </div>
+  `).join('');
+}
+
+// ---- EXPORT / IMPORT ----
+function exportData() {
+  const blob = new Blob([JSON.stringify(state, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `pomo-tareas-${new Date().toISOString().split('T')[0]}.json`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function importData(e) {
+  const file = e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = ev => {
+    try {
+      const data = JSON.parse(ev.target.result);
+      if (data.tasks && Array.isArray(data.tasks)) {
+        state = { ...state, ...data };
+        save();
+        renderAll();
+        showToast('✅ Importación correcta', `${data.tasks.length} tareas cargadas.`);
+      } else {
+        showToast('❌ Error', 'Archivo JSON no válido.');
+      }
+    } catch {
+      showToast('❌ Error', 'No se pudo leer el archivo.');
+    }
+  };
+  reader.readAsText(file);
+  e.target.value = '';
+}
+
+// ---- SECCIONES COLAPSABLES ----
+
+/**
+ * Alterna la visibilidad de una sección colapsable dentro del temporizador.
+ * @param {HTMLElement} btn - El botón toggle pulsado
+ */
+function toggleSeccion(btn) {
+  const contenido = btn.nextElementSibling;
+  const abierto   = btn.classList.toggle('abierto');
+  btn.setAttribute('aria-expanded', abierto);
+  contenido.classList.toggle('visible', abierto);
+}
+
+// ---- DRAG & DROP DE BURBUJAS ----
+
+/**
+ * Orden de burbujas por columna, persistido en localStorage.
+ * Estructura: { '0': ['temporizador','estadisticas'], '1': ['tareas','kanban','nota','datos'] }
+ */
+let layoutBurbujas = null;
+
+/** Clave de localStorage para el layout de burbujas */
+const LAYOUT_KEY = 'pomo_layout_burbujas';
+
+/** ID de la burbuja que se está arrastrando */
+let burbujaArrastrando = null;
+
+/** Carga el layout guardado o devuelve el por defecto */
+function cargarLayout() {
+  try {
+    const raw = localStorage.getItem(LAYOUT_KEY);
+    if (raw) layoutBurbujas = JSON.parse(raw);
+  } catch(e) {}
+  if (!layoutBurbujas) {
+    layoutBurbujas = {
+      '0': ['temporizador', 'estadisticas'],
+      '1': ['tareas', 'kanban', 'nota', 'datos']
+    };
+  }
+}
+
+/** Guarda el layout actual en localStorage */
+function guardarLayout() {
+  localStorage.setItem(LAYOUT_KEY, JSON.stringify(layoutBurbujas));
+}
+
+/**
+ * Aplica el layout guardado: mueve cada burbuja a su columna en el orden correcto.
+ * Se llama al inicio y después de cada reordenación.
+ */
+function aplicarLayout() {
+  document.querySelectorAll('.layout-col').forEach(col => {
+    const idCol = col.dataset.col;
+    const ids   = layoutBurbujas[idCol] || [];
+    ids.forEach(idBurbuja => {
+      const el = document.getElementById(`burbuja-${idBurbuja}`);
+      if (el) col.appendChild(el);
+    });
+  });
+}
+
+/**
+ * Recalcula el layout a partir de la posición actual del DOM y lo guarda.
+ */
+function sincronizarLayout() {
+  document.querySelectorAll('.layout-col').forEach(col => {
+    const idCol = col.dataset.col;
+    layoutBurbujas[idCol] = Array.from(col.querySelectorAll(':scope > .burbuja'))
+      .map(b => b.dataset.id);
+  });
+  guardarLayout();
+}
+
+/** Inicializa los listeners de drag & drop en todas las burbujas y columnas */
+function iniciarDragDrop() {
+  document.querySelectorAll('.burbuja').forEach(burbuja => {
+    const handle = burbuja.querySelector('.drag-handle');
+
+    /*
+     * El arrastre SOLO se habilita mientras el puntero está presionado
+     * sobre el handle (⠿). En cuanto se suelta, se desactiva para que
+     * el contenido interior (textareas, inputs, selects) funcione con
+     * normalidad y no haya interferencias con la selección de texto.
+     */
+    handle.addEventListener('mousedown', e => {
+      burbuja.setAttribute('draggable', 'true');
+    });
+
+    // Desactivar draggable al soltar el botón del ratón, tanto en el handle
+    // como a nivel de documento (cubre el caso de soltar fuera del handle)
+    handle.addEventListener('mouseup', () => {
+      burbuja.setAttribute('draggable', 'false');
+    });
+
+    // Salvaguarda: desactivar también a nivel de documento por si mouseup
+    // se dispara fuera del handle
+    document.addEventListener('mouseup', () => {
+      burbuja.setAttribute('draggable', 'false');
+    }, { passive: true });
+
+    burbuja.addEventListener('dragstart', e => {
+      // Solo proceder si el arrastre fue iniciado desde el handle
+      // y no es un arrastre de tarea (identificado por el tipo de dato)
+      if (burbuja.getAttribute('draggable') !== 'true') {
+        e.preventDefault();
+        return;
+      }
+      // Si el origen es una tarea (tiene data-task-id), no interferir
+      if (e.target.closest && e.target.closest('[data-task-id]')) {
+        e.preventDefault();
+        return;
+      }
+      burbujaArrastrando = burbuja;
+      burbuja.classList.add('arrastrando');
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', burbuja.dataset.id);
+    });
+
+    burbuja.addEventListener('dragend', () => {
+      burbuja.setAttribute('draggable', 'false');
+      burbuja.classList.remove('arrastrando');
+      document.querySelectorAll('.drop-placeholder').forEach(p => p.remove());
+      burbujaArrastrando = null;
+      sincronizarLayout();
+    });
+
+  });
+
+  // Drop en columna vacía o en el hueco al final
+  document.querySelectorAll('.layout-col').forEach(col => {
+    col.addEventListener('dragover', e => {
+      if (e.dataTransfer.types.includes('kanban-tarjeta-id')) return;
+      e.preventDefault();
+      if (!burbujaArrastrando) return;
+      e.dataTransfer.dropEffect = 'move';
+      const burbujas = Array.from(col.querySelectorAll(':scope > .burbuja'));
+      if (burbujas.length === 0) {
+        col.appendChild(burbujaArrastrando);
+      }
+    });
+
+    col.addEventListener('drop', e => {
+      if (e.dataTransfer.types.includes('kanban-tarjeta-id')) return;
+      e.preventDefault();
+    });
+  });
+
+  // Drop sobre otra burbuja: insertar antes o después según posición del cursor
+  document.querySelectorAll('.burbuja').forEach(burbuja => {
+    burbuja.addEventListener('dragover', e => {
+      if (e.dataTransfer.types.includes('kanban-tarjeta-id')) return;
+      if (e.dataTransfer.types.includes('pomo-tarea-id')) return;
+      if (!burbujaArrastrando || burbujaArrastrando === burbuja) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      const col   = burbuja.closest('.layout-col');
+      if (!col) return;
+      const rect  = burbuja.getBoundingClientRect();
+      const mitad = rect.top + rect.height / 2;
+      if (e.clientY < mitad) {
+        col.insertBefore(burbujaArrastrando, burbuja);
+      } else {
+        col.insertBefore(burbujaArrastrando, burbuja.nextSibling);
+      }
+    });
+  });
+}
+
+/** Modo actual de la nota: 'editar' | 'preview' */
+let modoNota = 'editar';
+
+/**
+ * Cambia el modo de visualización de la nota entre edición y previsualización Markdown.
+ * En modo preview renderiza el contenido del textarea usando marked.js.
+ * @param {string} modo - 'editar' | 'preview'
+ */
+function cambiarModoNota(modo) {
+  modoNota = modo;
+  const ta      = document.getElementById('nota-textarea');
+  const preview = document.getElementById('nota-preview');
+  const btnEdit = document.getElementById('nota-btn-editar');
+  const btnPrev = document.getElementById('nota-btn-preview');
+
+  if (modo === 'preview') {
+    // Renderizar Markdown y mostrar visor
+    const contenido = ta.value || '*Sin contenido*';
+    preview.innerHTML = marked.parse(contenido);
+    preview.style.display = 'block';
+    preview.style.minHeight = ta.style.height || '180px';
+    ta.style.display = 'none';
+    btnEdit.classList.remove('activo');
+    btnPrev.classList.add('activo');
+  } else {
+    // Volver al textarea de edición
+    ta.style.display = 'block';
+    preview.style.display = 'none';
+    btnEdit.classList.add('activo');
+    btnPrev.classList.remove('activo');
+    ta.focus();
+  }
+}
+
+
+
+/** Temporizador para el debounce del guardado de nota */
+let _notaTimer = null;
+
+/**
+ * Guarda la nota en el estado y en localStorage con un pequeño debounce
+ * para no escribir en cada pulsación de tecla.
+ */
+function guardarNota() {
+  clearTimeout(_notaTimer);
+  _notaTimer = setTimeout(() => {
+    state.nota = document.getElementById('nota-textarea').value;
+    save();
+    // Mostrar indicador de guardado durante 2 segundos
+    const ind = document.getElementById('nota-guardado');
+    ind.classList.add('visible');
+    setTimeout(() => ind.classList.remove('visible'), 2000);
+  }, 600);
+}
+
+/** Carga el contenido de la nota en el textarea al iniciar */
+function cargarNota() {
+  const ta     = document.getElementById('nota-textarea');
+  const slider = document.getElementById('nota-altura-slider');
+  const label  = document.getElementById('nota-altura-px');
+  if (!ta) return;
+
+  ta.value = state.nota || '';
+
+  // Restaurar altura guardada (por defecto 180px)
+  const alturaGuardada = parseInt(localStorage.getItem('pomo_nota_altura')) || 180;
+  ta.style.height   = alturaGuardada + 'px';
+  if (slider) slider.value = alturaGuardada;
+  if (label)  label.textContent = alturaGuardada + 'px';
+}
+
+/**
+ * Ajusta la altura del textarea de nota y la persiste en localStorage.
+ * @param {number|string} valor - Altura en píxeles
+ */
+function ajustarAltaNota(valor) {
+  const px    = parseInt(valor);
+  const ta    = document.getElementById('nota-textarea');
+  const label = document.getElementById('nota-altura-px');
+  if (ta)    ta.style.height    = px + 'px';
+  if (label) label.textContent  = px + 'px';
+  localStorage.setItem('pomo_nota_altura', px);
+}
+
+// ---- DRAG-TO-ASSIGN: arrastrar tarea al temporizador ----
+
+/**
+ * Clave de localStorage para el estado de colapso de burbujas.
+ * Almacena un objeto { 'temporizador': true, 'estadisticas': false, ... }
+ * donde true significa que la burbuja está colapsada.
+ */
+const COLAPSO_KEY = 'pomo_burbujas_colapsadas';
+
+/**
+ * Estado de colapso de cada burbuja.
+ * Cargado desde localStorage al iniciar.
+ * @type {Object.<string, boolean>}
+ */
+let estadoColapso = {};
+
+/**
+ * Se dispara cuando el usuario empieza a arrastrar una tarea.
+ * Guarda el ID de la tarea en el dataTransfer y añade clase visual.
+ * @param {DragEvent} e - Evento de arrastre
+ * @param {string} idTarea - ID de la tarea arrastrada
+ */
+function onTareaArrastreInicio(e, idTarea) {
+  // Evitar interferencia con el drag & drop de burbujas
+  e.stopPropagation();
+  e.dataTransfer.setData('pomo-tarea-id', idTarea);
+  e.dataTransfer.effectAllowed = 'copy';
+  // Añadir clase visual tras un pequeño retraso (necesario en algunos navegadores)
+  setTimeout(() => {
+    const el = document.querySelector(`.task-item[data-task-id="${idTarea}"]`);
+    if (el) el.classList.add('dragging-assign');
+  }, 0);
+}
+
+/**
+ * Se dispara cuando termina el arrastre de una tarea (soltado o cancelado).
+ * Elimina la clase visual de arrastre de todas las tareas.
+ * @param {DragEvent} e - Evento de fin de arrastre
+ */
+function onTareaArrastrarFin(e) {
+  document.querySelectorAll('.task-item.dragging-assign')
+    .forEach(el => el.classList.remove('dragging-assign'));
+  const zona = document.getElementById('zona-drop-tarea');
+  if (zona) zona.classList.remove('drop-activo');
+}
+
+/**
+ * Inicializa la zona de drop del selector de tarea activa.
+ * Permite soltar una tarea arrastrada para asignarla al temporizador.
+ */
+function iniciarDropZonaTarea() {
+  const zona = document.getElementById('zona-drop-tarea');
+  if (!zona) return;
+
+  /** Resaltar la zona cuando se arrastra encima */
+  zona.addEventListener('dragover', e => {
+    if (!e.dataTransfer.types.includes('pomo-tarea-id')) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+    zona.classList.add('drop-activo');
+  });
+
+  /** Quitar resalte al salir de la zona */
+  zona.addEventListener('dragleave', e => {
+    // Comprobar que realmente salimos de la zona (no un hijo)
+    if (!zona.contains(e.relatedTarget)) {
+      zona.classList.remove('drop-activo');
+    }
+  });
+
+  /**
+   * Asignar la tarea soltada como tarea activa del temporizador.
+   * Si la tarea está completada, ignora el drop.
+   */
+  zona.addEventListener('drop', e => {
+    e.preventDefault();
+    zona.classList.remove('drop-activo');
+    const idTarea = e.dataTransfer.getData('pomo-tarea-id');
+    if (!idTarea) return;
+
+    const tarea = state.tasks.find(t => t.id === idTarea);
+    if (!tarea || tarea.completed) {
+      showToast('⚠️ No asignada', 'Solo se pueden asignar tareas pendientes.');
+      return;
+    }
+
+    const sel = document.getElementById('active-task-select');
+    // Comprobar que la opción existe en el select (podría estar filtrada)
+    const opcion = Array.from(sel.options).find(o => o.value === idTarea);
+    if (!opcion) {
+      // Si no está, la añadimos temporalmente
+      const opt = document.createElement('option');
+      opt.value = idTarea;
+      opt.textContent = tarea.desc.substring(0, 50);
+      sel.appendChild(opt);
+    }
+
+    sel.value = idTarea;
+    showToast('🎯 Tarea asignada', tarea.desc.substring(0, 60));
+
+    // Actualizar la lista para resaltar la tarea activa
+    renderTaskList();
+
+    // Iniciar el reloj automáticamente si no está en marcha,
+    // igual que al cambiar la tarea desde el desplegable
+    if (!timer.running) {
+      startTimer();
+      showToast('▶ Reloj iniciado', tarea.desc.substring(0, 50));
+    }
+  });
+}
+
+// ---- COLAPSO DE BURBUJAS ----
+
+/**
+ * Carga el estado de colapso desde localStorage.
+ */
+function cargarEstadoColapso() {
+  try {
+    const raw = localStorage.getItem(COLAPSO_KEY);
+    if (raw) estadoColapso = JSON.parse(raw);
+  } catch(e) {}
+}
+
+/**
+ * Guarda el estado de colapso actual en localStorage.
+ */
+function guardarEstadoColapso() {
+  localStorage.setItem(COLAPSO_KEY, JSON.stringify(estadoColapso));
+}
+
+/**
+ * Aplica el estado de colapso guardado a todas las burbujas al iniciar.
+ * Las burbujas marcadas como colapsadas recibirán la clase CSS correspondiente.
+ */
+function aplicarEstadoColapso() {
+  Object.keys(estadoColapso).forEach(idBurbuja => {
+    if (estadoColapso[idBurbuja]) {
+      const el = document.getElementById(`burbuja-${idBurbuja}`);
+      if (el) el.classList.add('colapsada');
+    }
+  });
+}
+
+/**
+ * Alterna el estado colapsado/expandido de una burbuja.
+ * Persiste el nuevo estado en localStorage.
+ * @param {string} idBurbuja - Identificador de la burbuja ('temporizador', 'tareas', etc.)
+ */
+function toggleColapsoBurbuja(idBurbuja) {
+  const el = document.getElementById(`burbuja-${idBurbuja}`);
+  if (!el) return;
+  const estaColapsada = el.classList.toggle('colapsada');
+  estadoColapso[idBurbuja] = estaColapsada;
+  guardarEstadoColapso();
+}
+
+
+// ---- KANBAN ----
+
+/**
+ * ID de la tarjeta Kanban que se está arrastrando entre columnas.
+ * @type {string|null}
+ */
+let kanbanArrastrando = null;
+
+/**
+ * Columnas disponibles del tablero Kanban con su configuración visual.
+ * @type {Array<{id:string, label:string, emoji:string}>}
+ */
+const KANBAN_COLUMNAS = [
+  { id: 'idea',        label: 'Idea · Análisis',    emoji: '💡' },
+  { id: 'desarrollo',  label: 'Desarrollo',          emoji: '🔨' },
+  { id: 'revision',    label: 'Revisión · Bloqueo',  emoji: '🔍' },
+  { id: 'hecho',       label: 'Hecho',               emoji: '✅' }
+];
+
+/**
+ * Renderiza todas las tarjetas Kanban en sus columnas correspondientes.
+ * También actualiza los contadores de tarjetas por columna y el selector
+ * de proyectos en el formulario de nueva tarea.
+ */
+function renderKanban() {
+  const tarjetas = state.tarjetasKanban || [];
+
+  KANBAN_COLUMNAS.forEach(col => {
+    const zona  = document.getElementById(`kdrop-${col.id}`);
+    const count = document.getElementById(`kcount-${col.id}`);
+    if (!zona) return;
+
+    const tarjetasCol = tarjetas.filter(t => t.columna === col.id);
+    if (count) count.textContent = tarjetasCol.length;
+
+    zona.innerHTML = tarjetasCol.length === 0
+      ? ''
+      : tarjetasCol.map(t => renderTarjetaKanban(t)).join('');
+
+    // Añadir listeners de drag al TÍTULO de cada tarjeta (único handle de arrastre)
+    zona.querySelectorAll('.kanban-tarjeta').forEach(el => {
+      const titulo = el.querySelector('.kanban-tarjeta-titulo');
+      if (titulo) {
+        titulo.addEventListener('dragstart', e => onKanbanTarjetaDragStart(e, el.dataset.id));
+        titulo.addEventListener('dragend',   e => onKanbanTarjetaDragEnd(e));
+      }
+    });
+  });
+
+  // Actualizar selector de proyecto Kanban en formulario de nueva tarea
+  actualizarSelectorKanban();
+}
+
+/**
+ * Genera el HTML de una tarjeta Kanban con su lista compacta de tareas hijas.
+ * @param {Object} tarjeta - Objeto de tarjeta Kanban
+ * @returns {string} HTML de la tarjeta
+ */
+function renderTarjetaKanban(tarjeta) {
+  const prioridadClass = {
+    alta:  'kanban-prioridad-alta',
+    media: 'kanban-prioridad-media',
+    baja:  'kanban-prioridad-baja'
+  }[tarjeta.prioridad] || 'kanban-prioridad-media';
+
+  const prioridadLabel = { alta: '🔴 Alta', media: '🟡 Media', baja: '🟢 Baja' }[tarjeta.prioridad] || 'Media';
+
+  // Calcular pomodoros totales acumulados de las tareas hijas
+  const tareasHijas = (state.tasks || []).filter(t => t.idKanban === tarjeta.id);
+  const pomosTotal  = tareasHijas.reduce((acc, t) => acc + (t.pomodoros || 0), 0);
+
+  // Lista compacta de tareas hijas
+  const listaHijas = tareasHijas.length > 0 ? `
+    <div class="kanban-tareas-hijas">
+      ${tareasHijas.map(t => `
+        <div class="kanban-tarea-hija ${t.completed ? 'completada' : ''}">
+          <div class="kanban-tarea-hija-check" onclick="toggleTask('${t.id}')">${t.completed ? '✓' : ''}</div>
+          <span class="kanban-tarea-hija-nombre" title="${escAttr(t.desc)}">${escHtml(t.desc.substring(0, 35))}</span>
+          ${t.pomodoros > 0 ? `<span class="kanban-tarea-hija-pomo">🍅${t.pomodoros}</span>` : ''}
+        </div>`).join('')}
+    </div>` : '';
+
+  return `
+  <div class="kanban-tarjeta" data-id="${tarjeta.id}" draggable="false">
+    <div class="kanban-tarjeta-titulo" draggable="true" title="${escAttr(tarjeta.titulo)}">${escHtml(tarjeta.titulo)}</div>
+    <div class="kanban-tarjeta-meta">
+      <span class="kanban-prioridad ${prioridadClass}">${prioridadLabel}</span>
+      ${tarjeta.fechaLimite ? `<span class="kanban-tarjeta-fecha">⏱ ${formatDate(tarjeta.fechaLimite)}</span>` : ''}
+      ${pomosTotal > 0 ? `<span class="kanban-tarjeta-pomodoros">🍅 ×${pomosTotal}</span>` : ''}
+    </div>
+    ${listaHijas}
+    <div class="kanban-tarjeta-acciones">
+      <button class="kanban-btn-accion" onclick="abrirModalTareaDesdeKanban('${tarjeta.id}')">+ Tarea</button>
+      <button class="kanban-btn-accion" onclick="abrirModalKanban('${tarjeta.id}')">✏️</button>
+      <button class="kanban-btn-accion danger" onclick="eliminarTarjetaKanban('${tarjeta.id}')">✕</button>
+    </div>
+  </div>`;
+}
+
+/**
+ * Abre el modal para crear una nueva tarjeta o editar una existente.
+ * @param {string|null} idTarjeta - null para crear, id para editar
+ * @param {string} [columna='idea'] - Columna destino al crear
+ */
+function abrirModalKanban(idTarjeta, columna = 'idea') {
+  const modal = document.getElementById('kanban-modal');
+  modal.style.display = 'flex';
+
+  if (idTarjeta) {
+    // Modo edición
+    const t = (state.tarjetasKanban || []).find(k => k.id === idTarjeta);
+    if (!t) return;
+    document.getElementById('kanban-modal-titulo').textContent   = 'Editar tarjeta';
+    document.getElementById('kanban-modal-id').value             = t.id;
+    document.getElementById('kanban-modal-columna').value        = t.columna;
+    document.getElementById('kanban-modal-nombre').value         = t.titulo;
+    document.getElementById('kanban-modal-prioridad').value      = t.prioridad;
+    document.getElementById('kanban-modal-fecha').value          = t.fechaLimite || '';
+  } else {
+    // Modo creación
+    document.getElementById('kanban-modal-titulo').textContent   = 'Nueva tarjeta';
+    document.getElementById('kanban-modal-id').value             = '';
+    document.getElementById('kanban-modal-columna').value        = columna;
+    document.getElementById('kanban-modal-nombre').value         = '';
+    document.getElementById('kanban-modal-prioridad').value      = 'media';
+    document.getElementById('kanban-modal-fecha').value          = '';
+  }
+  setTimeout(() => document.getElementById('kanban-modal-nombre').focus(), 80);
+}
+
+/**
+ * Cierra el modal de tarjeta Kanban.
+ * Si se llama con un evento, solo cierra si el click fue en el overlay.
+ * @param {Event} [e] - Evento de click opcional
+ */
+function cerrarModalKanban(e) {
+  if (e && e.target !== document.getElementById('kanban-modal')) return;
+  document.getElementById('kanban-modal').style.display = 'none';
+}
+
+/**
+ * Guarda la tarjeta Kanban (crea o actualiza según si hay ID en el modal).
+ */
+function guardarTarjetaKanban() {
+  const nombre = document.getElementById('kanban-modal-nombre').value.trim();
+  if (!nombre) { document.getElementById('kanban-modal-nombre').focus(); return; }
+
+  const id       = document.getElementById('kanban-modal-id').value;
+  const columna  = document.getElementById('kanban-modal-columna').value;
+  const prioridad = document.getElementById('kanban-modal-prioridad').value;
+  const fecha    = document.getElementById('kanban-modal-fecha').value;
+
+  state.tarjetasKanban = state.tarjetasKanban || [];
+
+  if (id) {
+    // Actualizar tarjeta existente
+    const t = state.tarjetasKanban.find(k => k.id === id);
+    if (t) {
+      t.titulo     = nombre;
+      t.prioridad  = prioridad;
+      t.fechaLimite = fecha;
+      // La columna no se cambia desde el modal: se cambia arrastrando
+    }
+  } else {
+    // Crear nueva tarjeta
+    state.tarjetasKanban.push({
+      id:          Date.now().toString(),
+      titulo:      nombre,
+      columna,
+      prioridad,
+      fechaLimite: fecha,
+      creada:      new Date().toISOString()
+    });
+  }
+
+  save();
+  cerrarModalKanban();
+  renderKanban();
+  showToast('📋 Tarjeta guardada', nombre.substring(0, 50));
+}
+
+/**
+ * Elimina una tarjeta Kanban y desvincula todas sus tareas hijas.
+ * @param {string} id - ID de la tarjeta a eliminar
+ */
+function eliminarTarjetaKanban(id) {
+  state.tarjetasKanban = (state.tarjetasKanban || []).filter(k => k.id !== id);
+  // Desvincular las tareas hijas
+  (state.tasks || []).forEach(t => {
+    if (t.idKanban === id) t.idKanban = null;
+  });
+  save();
+  renderKanban();
+  renderTaskList();
+  actualizarSelectorKanban();
+}
+
+/**
+ * Abre el formulario de nueva tarea con la vinculación Kanban preseleccionada.
+ * Se llama desde el botón "+ Tarea" dentro de una tarjeta Kanban.
+ * @param {string} idKanban - ID de la tarjeta Kanban padre
+ */
+function abrirModalTareaDesdeKanban(idKanban) {
+  // Asegurarse de que la burbuja de tareas esté expandida
+  const burbujaT = document.getElementById('burbuja-tareas');
+  if (burbujaT && burbujaT.classList.contains('colapsada')) {
+    toggleColapsoBurbuja('tareas');
+  }
+  // Seleccionar el proyecto en el selector
+  const sel = document.getElementById('task-kanban');
+  if (sel) sel.value = idKanban;
+  // Dar foco al campo de descripción
+  const inp = document.getElementById('task-input');
+  if (inp) { inp.focus(); inp.scrollIntoView({ behavior: 'smooth', block: 'center' }); }
+}
+
+/**
+ * Actualiza el selector de proyecto Kanban en el formulario de nueva tarea.
+ * Se llama tras cualquier cambio en las tarjetas Kanban.
+ */
+function actualizarSelectorKanban() {
+  const sel = document.getElementById('task-kanban');
+  if (!sel) return;
+  const prev = sel.value;
+  // Solo se muestran tarjetas que NO estén en la columna 'hecho'
+  const tarjetasActivas = (state.tarjetasKanban || []).filter(k => k.columna !== 'hecho');
+  sel.innerHTML = '<option value="">📋 Sin proyecto Kanban</option>' +
+    tarjetasActivas.map(k =>
+      `<option value="${k.id}">${escHtml(k.titulo.substring(0, 45))}</option>`
+    ).join('');
+  if (prev) sel.value = prev;
+}
+
+// ---- DRAG & DROP KANBAN (mover tarjetas entre columnas) ----
+
+/**
+ * Inicia el arrastre de una tarjeta Kanban.
+ * @param {DragEvent} e
+ * @param {string} idTarjeta
+ */
+function onKanbanTarjetaDragStart(e, idTarjeta) {
+  e.stopPropagation(); // Evitar interferencia con drag de burbujas
+  kanbanArrastrando = idTarjeta;
+  e.dataTransfer.setData('kanban-tarjeta-id', idTarjeta);
+  e.dataTransfer.effectAllowed = 'move';
+  setTimeout(() => {
+    const el = document.querySelector(`.kanban-tarjeta[data-id="${idTarjeta}"]`);
+    if (el) el.classList.add('arrastrando-kanban');
+  }, 0);
+}
+
+/**
+ * Finaliza el arrastre de una tarjeta Kanban.
+ * @param {DragEvent} e
+ */
+function onKanbanTarjetaDragEnd(e) {
+  document.querySelectorAll('.kanban-tarjeta.arrastrando-kanban')
+    .forEach(el => el.classList.remove('arrastrando-kanban'));
+  document.querySelectorAll('.kanban-columna-dropzone.drop-activo')
+    .forEach(el => el.classList.remove('drop-activo'));
+  kanbanArrastrando = null;
+}
+
+/**
+ * Gestiona el evento dragover sobre una zona de drop de columna Kanban.
+ * Solo acepta arrastres de tarjetas Kanban (no de tareas ni burbujas).
+ * @param {DragEvent} e
+ * @param {string} idColumna
+ */
+function onKanbanDragOver(e, idColumna) {
+  if (!e.dataTransfer.types.includes('kanban-tarjeta-id')) return;
+  e.preventDefault();
+  e.stopPropagation();
+  e.dataTransfer.dropEffect = 'move';
+  const zona = document.getElementById(`kdrop-${idColumna}`);
+  if (zona) zona.classList.add('drop-activo');
+}
+
+/**
+ * Elimina el resalte de drop al salir de la zona.
+ * @param {DragEvent} e
+ * @param {string} idColumna
+ */
+function onKanbanDragLeave(e, idColumna) {
+  const zona = document.getElementById(`kdrop-${idColumna}`);
+  if (zona && !zona.contains(e.relatedTarget)) {
+    zona.classList.remove('drop-activo');
+  }
+}
+
+/**
+ * Gestiona el drop de una tarjeta en una columna Kanban.
+ * Actualiza la columna de la tarjeta y re-renderiza el tablero.
+ * @param {DragEvent} e
+ * @param {string} idColumnaDestino
+ */
+function onKanbanDrop(e, idColumnaDestino) {
+  e.preventDefault();
+  e.stopPropagation();
+  const zona = document.getElementById(`kdrop-${idColumnaDestino}`);
+  if (zona) zona.classList.remove('drop-activo');
+
+  const idTarjeta = e.dataTransfer.getData('kanban-tarjeta-id');
+  if (!idTarjeta) return;
+
+  const tarjeta = (state.tarjetasKanban || []).find(k => k.id === idTarjeta);
+  if (!tarjeta) return;
+
+  const columnaAnterior = tarjeta.columna;
+  tarjeta.columna = idColumnaDestino;
+
+  // Al mover a 'hecho': completar automáticamente todas las tareas hijas pendientes
+  let tareasAutoCompletadas = 0;
+  if (idColumnaDestino === 'hecho' && columnaAnterior !== 'hecho') {
+    (state.tasks || []).forEach(t => {
+      if (t.idKanban === tarjeta.id && !t.completed) {
+        t.completed   = true;
+        t.completedAt = new Date().toISOString();
+        tareasAutoCompletadas++;
+      }
+    });
+    if (tareasAutoCompletadas > 0) {
+      renderTaskList();
+      renderTaskSelect();
+      renderStats();
+    }
+  }
+
+  save();
+  renderKanban();
+
+  if (columnaAnterior !== idColumnaDestino) {
+    const colLabel = KANBAN_COLUMNAS.find(c => c.id === idColumnaDestino)?.label || idColumnaDestino;
+    const msgExtra = tareasAutoCompletadas > 0 ? ` · ${tareasAutoCompletadas} tarea(s) completada(s)` : '';
+    showToast('📋 Tarjeta movida', `${tarjeta.titulo.substring(0, 35)} → ${colLabel}${msgExtra}`);
+  }
+}
+
+// Cerrar modal con Escape
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') {
+    const modal = document.getElementById('kanban-modal');
+    if (modal && modal.style.display !== 'none') cerrarModalKanban();
+  }
+});
+
+// ---- COLAPSO DE COLUMNAS KANBAN ----
+
+/**
+ * Clave de localStorage para el estado de colapso de las columnas Kanban.
+ * Almacena un objeto { 'idea': true, 'desarrollo': false, ... }
+ * donde true significa que la columna está colapsada.
+ */
+const KANBAN_COLAPSO_KEY = 'pomo_kanban_columnas_colapsadas';
+
+/**
+ * Estado de colapso de cada columna Kanban.
+ * Cargado desde localStorage al iniciar.
+ * @type {Object.<string, boolean>}
+ */
+let estadoColapsoKanban = {};
+
+/**
+ * Carga el estado de colapso de columnas Kanban desde localStorage.
+ */
+function cargarEstadoColapsoKanban() {
+  try {
+    const raw = localStorage.getItem(KANBAN_COLAPSO_KEY);
+    if (raw) estadoColapsoKanban = JSON.parse(raw);
+  } catch(e) {}
+}
+
+/**
+ * Guarda el estado de colapso de columnas Kanban en localStorage.
+ */
+function guardarEstadoColapsoKanban() {
+  localStorage.setItem(KANBAN_COLAPSO_KEY, JSON.stringify(estadoColapsoKanban));
+}
+
+/**
+ * Aplica el estado de colapso guardado a todas las columnas Kanban al iniciar.
+ */
+function aplicarEstadoColapsoKanban() {
+  Object.keys(estadoColapsoKanban).forEach(idColumna => {
+    if (estadoColapsoKanban[idColumna]) {
+      const col = document.querySelector(`.kanban-columna[data-columna="${idColumna}"]`);
+      if (col) col.classList.add('kanban-col-colapsada');
+    }
+  });
+}
+
+/**
+ * Alterna el estado colapsado/expandido de una columna Kanban.
+ * Persiste el nuevo estado en localStorage.
+ * @param {string} idColumna - Identificador de la columna ('idea', 'desarrollo', 'revision', 'hecho')
+ */
+function toggleColumnaKanban(idColumna) {
+  const col = document.querySelector(`.kanban-columna[data-columna="${idColumna}"]`);
+  if (!col) return;
+  const estaColapsada = col.classList.toggle('kanban-col-colapsada');
+  estadoColapsoKanban[idColumna] = estaColapsada;
+  guardarEstadoColapsoKanban();
+}
+
+
+// ---- INIT ----
+function renderAll() {
+  renderTaskList();
+  renderTaskSelect();
+  renderStats();
+  updateTimerUI();
+  cargarNota();
+  renderKanban();
+}
+
+load();
+loadTheme();
+cargarLayout();
+aplicarLayout();
+iniciarDragDrop();
+cargarEstadoColapso();
+aplicarEstadoColapso();
+cargarEstadoColapsoKanban();
+initTimer('work');
+renderAll();
+aplicarEstadoColapsoKanban();
+// La drop zone se inicializa después de renderAll porque el DOM debe estar listo
+iniciarDropZonaTarea();
+</script>
+</body>
+</html>
