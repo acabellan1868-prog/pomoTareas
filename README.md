@@ -4,6 +4,10 @@ Aplicación de productividad tipo Pomodoro con gestión de tareas, todo en un ú
 
 ---
 
+## 🚀 Abrir la aplicación
+
+👉 [Abrir Pomodoro & Tareas](https://acabellan1868-prog.github.io/pomoTareas/pomodoro-tareas-v11.html)
+
 ## ✨ Características
 
 ### ⏱ Temporizador Pomodoro
